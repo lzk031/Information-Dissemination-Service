@@ -2,7 +2,6 @@ package tribserver
 
 import (
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -24,6 +23,7 @@ type tribServer struct {
 }
 
 type KeySliceForSort []KeyForSort
+type TribbleSlice []tribrpc.Tribble
 
 type KeyForSort struct {
 	Posted  int64
@@ -244,9 +244,33 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
 		tribbleSlice[len(PostKeySlice)-1-i] = tribble
 	}
+	// tribbleSilce = ts.AccurateSort(tribbleSlice)
+	TribbleSlice := slice2type(tribbleSlice)
+	sort.Sort(TribbleSlice)
+
 	reply.Tribbles = tribbleSlice
 	reply.Status = tribrpc.OK
 	return nil
+}
+
+func slice2type(slice []tribrpc.Tribble) TribbleSlice {
+	tribbleslice := make(TribbleSlice, len(slice))
+	for i, tribble := range slice {
+		tribbleslice[i] = tribble
+	}
+	return tribbleslice
+}
+
+func (tribbleSlice TribbleSlice) Len() int {
+	return len(tribbleSlice)
+}
+
+func (tribbleSlice TribbleSlice) Swap(i, j int) {
+	tribbleSlice[i], tribbleSlice[j] = tribbleSlice[j], tribbleSlice[i]
+}
+
+func (tribbleSlice TribbleSlice) Less(i, j int) bool {
+	return tribbleSlice[i].Posted.Sub(tribbleSlice[j].Posted) < 0
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
@@ -284,6 +308,8 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
 		tribbleSlice[len(PostKeySlice)-1-i] = tribble
 	}
+	TribbleSlice := slice2type(tribbleSlice)
+	sort.Sort(TribbleSlice)
 	reply.Tribbles = tribbleSlice
 	reply.Status = tribrpc.OK
 	return nil
@@ -312,9 +338,7 @@ func (ts *tribServer) Sort(PostKeySlice []string) []string {
 		keyForSort := &KeyForSort{Posted: posted, PostKey: postKey}
 		KeySliceForSort[i] = *keyForSort
 	}
-	fmt.Println(KeySliceForSort)
 	sort.Sort(KeySliceForSort)
-	fmt.Println(KeySliceForSort)
 	// get rid of Posted time
 	for j, keyForSort2 := range KeySliceForSort {
 		KeySliceSort[j] = keyForSort2.PostKey
