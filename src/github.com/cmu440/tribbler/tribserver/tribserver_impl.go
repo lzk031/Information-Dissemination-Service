@@ -1,11 +1,16 @@
 package tribserver
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/rpc"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/util"
@@ -15,6 +20,13 @@ import (
 
 type tribServer struct {
 	lib libstore.Libstore
+}
+
+type KeySliceForSort []KeyForSort
+
+type KeyForSort struct {
+	Posted  int64
+	PostKey string
 }
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
@@ -58,8 +70,8 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 	fmt.Println("CreatUser")
 	defer fmt.Println("CreatUser Done")
-	UserKey := util.FormatUserKey(args.UserID)
-	if err := ts.lib.Put(UserKey, "hello"); err != nil {
+	// UserKey := util.FormatUserKey(args.UserID)
+	if err := ts.lib.Put(args.UserID, "I will never be deleted!:D"); err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
 	}
@@ -136,17 +148,148 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 }
 
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
-	return errors.New("not implemented")
+	fmt.Println("PostTribble")
+	defer fmt.Println("PostTribble Done")
+	UserKey := util.FormatUserKey(args.UserID)
+	// first check UserID
+	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	// userID exists in storage server
+	// Tribble
+	tribble := &tribrpc.Tribble{UserID: args.UserID, Posted: time.Now(), Contents: args.Contents}
+	tribBytes, merr := json.Marshal(*tribble)
+	if merr != nil {
+		return merr
+	}
+
+	// postkey
+	PostKey := util.FormatPostKey(args.UserID, tribble.Posted.Unix())
+	if err := ts.lib.Put(PostKey, string(tribBytes)); err != nil {
+		reply.Status = tribrpc.Exists
+		return nil
+	}
+
+	// Tribble list key
+	TribListKey := util.FormatTribListKey(args.UserID)
+	if err := ts.lib.AppendToList(TribListKey, PostKey); err != nil {
+		reply.Status = tribrpc.Exists
+		return err
+	}
+	reply.PostKey = PostKey
+	fmt.Println(PostKey)
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) DeleteTribble(args *tribrpc.DeleteTribbleArgs, reply *tribrpc.DeleteTribbleReply) error {
-	return errors.New("not implemented")
+	fmt.Println("DeleteTribble")
+	defer fmt.Println("DeleteTribble Done")
+	UserKey := util.FormatUserKey(args.UserID)
+	// first check UserID
+	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	// UserID exists
+	// Delete Item Map
+	if derr := ts.lib.Delete(args.PostKey); derr != nil {
+		reply.Status = tribrpc.NoSuchPost
+		return derr
+	}
+	// Remove from list
+	TribListKey := util.FormatTribListKey(args.UserID)
+	if uerr := ts.lib.RemoveFromList(TribListKey, args.PostKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
-	return errors.New("not implemented")
+	fmt.Println("GetTribble")
+	defer fmt.Println("GetTribble Done")
+	UserKey := util.FormatUserKey(args.UserID)
+	// first check UserID
+	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	// UserID exists
+	TribListKey := util.FormatTribListKey(args.UserID)
+	// tribbleBytesSlice, err := ts.lib.GetList(TribListKey)
+	PostKeySliceNaive, err := ts.lib.GetList(TribListKey)
+	if err != nil {
+		return err
+	}
+	// sort PostKeySlice
+	PostKeySlice, _ := ts.OneHundredPostKey(PostKeySliceNaive)
+	// fetch marshalled tribbles and then unmarshall
+	tribbleSlice := make([]tribrpc.Tribble, len(PostKeySlice))
+	for i, PostKey := range PostKeySlice {
+		// fetch tribble by PostKey
+		tribbleBytes, perr := ts.lib.Get(PostKey)
+		if perr != nil {
+			reply.Status = tribrpc.NoSuchPost
+			return perr
+		}
+		// unmarshal
+		var tribble tribrpc.Tribble
+		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
+		tribbleSlice[i] = tribble
+	}
+	reply.Tribbles = tribbleSlice
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
 	return errors.New("not implemented")
+}
+
+// OneHundeedPostKey sort the string slice by their timestamp and pick top 100 tibbles
+// if input slice has less than 100 tribbles, then return all tribbles
+func (ts *tribServer) OneHundredPostKey(KeySlice []string) (OneHundredKey []string, err error) {
+	// sort the slice by timestamp
+	KeySliceSort := ts.Sort(KeySlice)
+	if len(KeySliceSort) > 100 {
+		OneHundredKey = KeySliceSort[:100]
+	} else {
+		OneHundredKey = KeySliceSort
+	}
+	return OneHundredKey, nil
+}
+
+func (ts *tribServer) Sort(PostKeySlice []string) []string {
+	KeySliceForSort := make(KeySliceForSort, len(PostKeySlice))
+	KeySliceSort := make([]string, len(PostKeySlice))
+	// extract Posted time to sort
+	for i, postKey := range PostKeySlice {
+		fmt.Println(postKey)
+		PostKeyParts := strings.Split(postKey, "_")
+		posted, _ := strconv.ParseInt(PostKeyParts[1], 16, 64)
+		keyForSort := &KeyForSort{Posted: posted, PostKey: postKey}
+		KeySliceForSort[i] = *keyForSort
+	}
+	sort.Sort(KeySliceForSort)
+	// get rid of Posted time
+	for j, keyForSort2 := range KeySliceForSort {
+		KeySliceSort[j] = keyForSort2.PostKey
+	}
+	return KeySliceSort
+}
+
+func (key KeySliceForSort) Len() int {
+	return len(key)
+}
+
+func (key KeySliceForSort) Swap(i, j int) {
+	key[i], key[j] = key[j], key[i]
+	return
+}
+
+func (key KeySliceForSort) Less(i, j int) bool {
+	return key[i].Posted > key[j].Posted // in desc order
 }

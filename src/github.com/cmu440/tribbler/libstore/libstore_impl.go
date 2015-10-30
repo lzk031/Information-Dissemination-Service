@@ -72,7 +72,14 @@ func (ls *libstore) Put(key, value string) error {
 }
 
 func (ls *libstore) Delete(key string) error {
-	return errors.New("not implemented")
+	fmt.Println("Lib: Delete")
+	defer fmt.Println("Lib: Delete Done")
+	args := &storagerpc.DeleteArgs{Key: key}
+	var reply storagerpc.DeleteReply
+	if err := ls.lib.Call("StorageServer.Delete", args, &reply); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {

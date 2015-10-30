@@ -75,12 +75,19 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 }
 
 func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
-	return errors.New("not implemented")
+	// assume item in ItemMap
+	if _, found := ss.ItemMap[args.Key]; found {
+		delete(ss.ItemMap, args.Key)
+		reply.Status = storagerpc.OK
+		return nil
+	}
+	// not found
+	reply.Status = storagerpc.ItemNotFound
+	return errors.New("Delete Item not found")
 }
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
 	// assuem userID exists
-	fmt.Println("GET LIST")
 	reply.Status = storagerpc.OK
 	reply.Value = ss.ListMap[args.Key]
 	Lease := &storagerpc.Lease{Granted: false, ValidSeconds: 5}
@@ -110,7 +117,6 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 	}
 	list = append(list, args.Value)
 	ss.ListMap[args.Key] = list
-	// ss.ListMap[args.Key] = append(ss.ListMap[args.Key], args.Value)
 	reply.Status = storagerpc.OK
 	return nil
 }
