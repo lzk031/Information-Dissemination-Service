@@ -69,8 +69,12 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 	fmt.Println("CreatUser")
 	defer fmt.Println("CreatUser Done")
-	UserKey := util.FormatUserKey(args.UserID)
-	if err := ts.lib.Put(UserKey, "I will never be deleted!:D"); err != nil {
+	// UserKey := util.FormatUserKey(args.UserID)
+	if _, uerr := ts.lib.Get(args.UserID); uerr == nil {
+		reply.Status = tribrpc.Exists
+		return uerr
+	}
+	if err := ts.lib.Put(args.UserID, "I will never be deleted!:D"); err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
 	}
@@ -81,18 +85,18 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
 	fmt.Println("AddSubscription")
 	defer fmt.Println("AddSubscription Done")
-	UserKey := util.FormatUserKey(args.UserID)
-	TargetUserKey := util.FormatUserKey(args.UserID)
+
 	// first check userID and TargetUserID
-	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+	if _, uerr := ts.lib.Get(args.UserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return uerr
 	}
-	if _, terr := ts.lib.Get(TargetUserKey); terr != nil {
+	if _, terr := ts.lib.Get(args.TargetUserID); terr != nil {
 		reply.Status = tribrpc.NoSuchTargetUser
 		return terr
 	}
 	// if both keys exist in storage server
+	UserKey := util.FormatUserKey(args.UserID)
 	SubListKey := util.FormatSubListKey(args.TargetUserID)
 	if err := ts.lib.AppendToList(UserKey, SubListKey); err != nil {
 		reply.Status = tribrpc.Exists
@@ -105,18 +109,17 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
 	fmt.Println("RemoveSubscription")
 	defer fmt.Println("RemoveSubscription Done")
-	UserKey := util.FormatUserKey(args.UserID)
-	TargetUserKey := util.FormatUserKey(args.UserID)
 	// first check UserID and TargetUserID
-	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+	if _, uerr := ts.lib.Get(args.UserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return uerr
 	}
-	if _, terr := ts.lib.Get(TargetUserKey); terr != nil {
+	if _, terr := ts.lib.Get(args.TargetUserID); terr != nil {
 		reply.Status = tribrpc.NoSuchTargetUser
 		return terr
 	}
 	// if both keys exist in storage server
+	UserKey := util.FormatUserKey(args.UserID)
 	SubListKey := util.FormatSubListKey(args.TargetUserID)
 	if uerr := ts.lib.RemoveFromList(UserKey, SubListKey); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
@@ -129,13 +132,14 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply *tribrpc.GetSubscriptionsReply) error {
 	fmt.Println("GetSubscription")
 	defer fmt.Println("GetSubscription Done")
-	UserKey := util.FormatUserKey(args.UserID)
+
 	// first check UserID
-	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+	if _, uerr := ts.lib.Get(args.UserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return uerr
 	}
 	// get subscribtion from storage server
+	UserKey := util.FormatUserKey(args.UserID)
 	UserIDs, err := ts.lib.GetList(UserKey)
 	if err != nil {
 		return err
@@ -149,9 +153,10 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
 	fmt.Println("PostTribble")
 	defer fmt.Println("PostTribble Done")
-	UserKey := util.FormatUserKey(args.UserID)
+
+	// UserKey := util.FormatUserKey(args.UserID)
 	// first check UserID
-	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+	if _, uerr := ts.lib.Get(args.UserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return uerr
 	}
@@ -185,9 +190,10 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 func (ts *tribServer) DeleteTribble(args *tribrpc.DeleteTribbleArgs, reply *tribrpc.DeleteTribbleReply) error {
 	fmt.Println("DeleteTribble")
 	defer fmt.Println("DeleteTribble Done")
-	UserKey := util.FormatUserKey(args.UserID)
+
+	// UserKey := util.FormatUserKey(args.UserID)
 	// first check UserID
-	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+	if _, uerr := ts.lib.Get(args.UserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return uerr
 	}
@@ -210,9 +216,10 @@ func (ts *tribServer) DeleteTribble(args *tribrpc.DeleteTribbleArgs, reply *trib
 func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
 	fmt.Println("GetTribble")
 	defer fmt.Println("GetTribble Done")
-	UserKey := util.FormatUserKey(args.UserID)
+
+	// UserKey := util.FormatUserKey(args.UserID)
 	// first check UserID
-	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+	if _, uerr := ts.lib.Get(args.UserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return uerr
 	}
@@ -246,13 +253,14 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
 	fmt.Println("GetTribbleBySubscription")
 	defer fmt.Println("GetTribbleBySubscription Done")
-	UserKey := util.FormatUserKey(args.UserID)
+
 	// first check UserID
-	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+	if _, uerr := ts.lib.Get(args.UserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return uerr
 	}
 	// then retreive the subscription list
+	UserKey := util.FormatUserKey(args.UserID)
 	UserIDs, err := ts.lib.GetList(UserKey)
 	if err != nil {
 		return err
@@ -269,7 +277,6 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		}
 		PostKeySliceNaiveAppend = append(PostKeySliceNaiveAppend, PostKeySliceNaive...)
 	}
-	// sort PostKeySliceNaiveAppendfmt.Println("PostKeySliceNaiveAppend")
 	PostKeySlice, _ := ts.OneHundredPostKey(PostKeySliceNaiveAppend)
 	// fetch marshalled tribbles and then unmarshall
 	tribbleSlice := make([]tribrpc.Tribble, len(PostKeySlice))

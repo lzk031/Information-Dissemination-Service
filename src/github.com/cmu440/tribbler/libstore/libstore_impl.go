@@ -2,7 +2,6 @@ package libstore
 
 import (
 	"errors"
-	"fmt"
 	"net/rpc"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
@@ -42,7 +41,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	// this is similar to client
 	lib, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
-		fmt.Println("Error: NewLibstore DialHTTP:", err)
+		// fmt.Println("Error: NewLibstore DialHTTP:", err)
 		return nil, err
 	}
 	// rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
@@ -50,67 +49,73 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	fmt.Println("Lib: Get")
-	defer fmt.Println("Lib: Get Done")
+	// fmt.Println("Lib: Get")
+	// defer fmt.Println("Lib: Get Done")
 	args := &storagerpc.GetArgs{Key: key, WantLease: false, HostPort: ls.HostPort}
 	var reply storagerpc.GetReply
-	if err := ls.lib.Call("StorageServer.Get", args, &reply); err != nil {
-		return "", err
+	_ = ls.lib.Call("StorageServer.Get", args, &reply)
+	if reply.Status != storagerpc.OK {
+		return "", errors.New("Error on lib:Get")
 	}
 	return reply.Value, nil
 }
 
 func (ls *libstore) Put(key, value string) error {
-	fmt.Println("Lib: Put")
-	defer fmt.Println("Lib: Put Done")
+	// fmt.Println("Lib: Put")
+	// defer fmt.Println("Lib: Put Done")
 	args := &storagerpc.PutArgs{Key: key, Value: value}
 	var reply storagerpc.PutReply
-	if err := ls.lib.Call("StorageServer.Put", args, &reply); err != nil {
-		return err
+	_ = ls.lib.Call("StorageServer.Put", args, &reply)
+	if reply.Status != storagerpc.OK {
+		return errors.New("Error on lib:Put")
 	}
 	return nil
 }
 
 func (ls *libstore) Delete(key string) error {
-	fmt.Println("Lib: Delete")
-	defer fmt.Println("Lib: Delete Done")
+	// fmt.Println("Lib: Delete")
+	// defer fmt.Println("Lib: Delete Done")
 	args := &storagerpc.DeleteArgs{Key: key}
 	var reply storagerpc.DeleteReply
-	if err := ls.lib.Call("StorageServer.Delete", args, &reply); err != nil {
-		return err
+	_ = ls.lib.Call("StorageServer.Delete", args, &reply)
+	if reply.Status != storagerpc.OK {
+		return errors.New("Error on lib:Delete")
 	}
 	return nil
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	fmt.Println("Lib: GetList")
-	defer fmt.Println("Lib: GetList Done")
+	// fmt.Println("Lib: GetList")
+	// defer fmt.Println("Lib: GetList Done")
 	args := &storagerpc.GetArgs{Key: key, WantLease: false, HostPort: ls.HostPort}
 	var reply storagerpc.GetListReply
-	if err := ls.lib.Call("StorageServer.GetList", args, &reply); err != nil {
-		return nil, err
+	_ = ls.lib.Call("StorageServer.GetList", args, &reply)
+	if reply.Status != storagerpc.OK {
+		return nil, errors.New("Error on lib:GetList")
 	}
 	return reply.Value, nil
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	fmt.Println("Lib: RemoveFromList")
-	defer fmt.Println("Lib: RemoveFromList Done")
+	// fmt.Println("Lib: RemoveFromList")
+	// defer fmt.Println("Lib: RemoveFromList Done")
 	args := &storagerpc.PutArgs{Key: key, Value: removeItem}
 	var reply storagerpc.PutReply
-	if err := ls.lib.Call("StorageServer.RemoveFromList", args, &reply); err != nil {
-		return err
+	_ = ls.lib.Call("StorageServer.RemoveFromList", args, &reply)
+	if reply.Status != storagerpc.OK {
+		return errors.New("Error on lib:RemoveFromList")
 	}
 	return nil
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	fmt.Println("Lib: AppendToList")
-	defer fmt.Println("Lib: AppendToList Done")
+	// fmt.Println("Lib: AppendToList")
+	// defer fmt.Println("Lib: AppendToList Done")
 	args := &storagerpc.PutArgs{Key: key, Value: newItem}
 	var reply storagerpc.PutReply
-	if err := ls.lib.Call("StorageServer.AppendToList", args, &reply); err != nil {
-		return err
+	_ = ls.lib.Call("StorageServer.AppendToList", args, &reply)
+	if reply.Status != storagerpc.OK {
+		return errors.New("Error on lib:AppendToList")
 	}
 	return nil
 }
