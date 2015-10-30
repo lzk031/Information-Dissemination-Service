@@ -2,12 +2,13 @@ package libstore
 
 import (
 	"errors"
+	"net/rpc"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
 type libstore struct {
-	// TODO: implement this!
+	lib *rpc.Client
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -35,7 +36,14 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	return nil, errors.New("not implemented")
+
+	// code copied from client
+	lib, err := rpc.DialHTTP("tcp", masterServerHostPort)
+	if err != nil {
+		return nil, err
+	}
+	// rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
+	return &libstore{lib: lib}, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {

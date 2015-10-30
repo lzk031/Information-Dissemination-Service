@@ -2,6 +2,11 @@ package storageserver
 
 import (
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/rpc"
+	"strconv"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
@@ -19,7 +24,31 @@ type storageServer struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	return nil, errors.New("not implemented")
+
+	storageServer := new(storageServer)
+
+	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
+	// for checkpoint, ignore masterServerHostPort first, but need to implement in the future
+	// Create the server socket that will listen for incoming RPCs.
+	listener, err := net.Listen("tcp", hostPort)
+	if err != nil {
+		fmt.Println("Error on StorageServer Listen", err)
+		return nil, err
+	}
+
+	// Wrap the Server before registering it for RPC.
+	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(storageServer))
+	if err != nil {
+		fmt.Println("Error on StorageServer RegisterName", err)
+		return nil, err
+	}
+
+	// Setup the HTTP handler that will server incoming RPCs and
+	// serve requests in a background goroutine.
+	rpc.HandleHTTP()
+	go http.Serve(listener, nil)
+
+	return storageServer, nil
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
