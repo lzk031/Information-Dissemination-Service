@@ -6,11 +6,12 @@ import (
 	"net/rpc"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
-	"github.com/cmu440/tribbler/util"
+	// "github.com/cmu440/tribbler/util"
 )
 
 type libstore struct {
-	lib *rpc.Client
+	lib      *rpc.Client
+	HostPort string
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -38,24 +39,31 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-
-	// code copied from client
+	// this is similar to client
 	lib, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
 		fmt.Println("Error: NewLibstore DialHTTP:", err)
 		return nil, err
 	}
 	// rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
-	return &libstore{lib: lib}, nil
+	return &libstore{lib: lib, HostPort: myHostPort}, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	return "", errors.New("not implemented")
+	fmt.Println("Lib: Get")
+	defer fmt.Println("Lib: Get Done")
+	args := &storagerpc.GetArgs{Key: key, WantLease: false, HostPort: ls.HostPort}
+	var reply storagerpc.GetReply
+	if err := ls.lib.Call("StorageServer.Get", args, &reply); err != nil {
+		return "", err
+	}
+	return reply.Value, nil
 }
 
 func (ls *libstore) Put(key, value string) error {
-	UserKey := util.FormatUserKey(key)
-	args := &storagerpc.PutArgs{Key: UserKey, Value: value}
+	fmt.Println("Lib: Put")
+	defer fmt.Println("Lib: Put Done")
+	args := &storagerpc.PutArgs{Key: key, Value: value}
 	var reply storagerpc.PutReply
 	if err := ls.lib.Call("StorageServer.Put", args, &reply); err != nil {
 		return err
@@ -68,15 +76,36 @@ func (ls *libstore) Delete(key string) error {
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	return nil, errors.New("not implemented")
+	fmt.Println("Lib: GetList")
+	defer fmt.Println("Lib: GetList Done")
+	args := &storagerpc.GetArgs{Key: key, WantLease: false, HostPort: ls.HostPort}
+	var reply storagerpc.GetListReply
+	if err := ls.lib.Call("StorageServer.GetList", args, &reply); err != nil {
+		return nil, err
+	}
+	return reply.Value, nil
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	return errors.New("not implemented")
+	fmt.Println("Lib: RemoveFromList")
+	defer fmt.Println("Lib: RemoveFromList Done")
+	args := &storagerpc.PutArgs{Key: key, Value: removeItem}
+	var reply storagerpc.PutReply
+	if err := ls.lib.Call("StorageServer.RemoveFromList", args, &reply); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	return errors.New("not implemented")
+	fmt.Println("Lib: AppendToList")
+	defer fmt.Println("Lib: AppendToList Done")
+	args := &storagerpc.PutArgs{Key: key, Value: newItem}
+	var reply storagerpc.PutReply
+	if err := ls.lib.Call("StorageServer.AppendToList", args, &reply); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {

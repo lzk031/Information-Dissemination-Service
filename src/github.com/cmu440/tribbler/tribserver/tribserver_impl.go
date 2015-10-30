@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 
 	"github.com/cmu440/tribbler/libstore"
+	"github.com/cmu440/tribbler/util"
 	// "github.com/cmu440/tribbler/rpc/storagerpc"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 )
@@ -57,8 +58,8 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 	fmt.Println("CreatUser")
 	defer fmt.Println("CreatUser Done")
-	err := ts.lib.Put(args.UserID, "hello") // Put is used only once
-	if err != nil {
+	UserKey := util.FormatUserKey(args.UserID)
+	if err := ts.lib.Put(UserKey, "hello"); err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
 	}
@@ -67,15 +68,71 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	return errors.New("not implemented")
+	fmt.Println("AddSubscription")
+	defer fmt.Println("AddSubscription Done")
+	UserKey := util.FormatUserKey(args.UserID)
+	TargetUserKey := util.FormatUserKey(args.UserID)
+	// first check userID and TargetUserID
+	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	if _, terr := ts.lib.Get(TargetUserKey); terr != nil {
+		reply.Status = tribrpc.NoSuchTargetUser
+		return terr
+	}
+	// if both keys exist in storage server
+	SubListKey := util.FormatSubListKey(args.TargetUserID)
+	if err := ts.lib.AppendToList(UserKey, SubListKey); err != nil {
+		reply.Status = tribrpc.Exists
+		return err
+	}
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	return errors.New("not implemented")
+	fmt.Println("RemoveSubscription")
+	defer fmt.Println("RemoveSubscription Done")
+	UserKey := util.FormatUserKey(args.UserID)
+	TargetUserKey := util.FormatUserKey(args.UserID)
+	// first check UserID and TargetUserID
+	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	if _, terr := ts.lib.Get(TargetUserKey); terr != nil {
+		reply.Status = tribrpc.NoSuchTargetUser
+		return terr
+	}
+	// if both keys exist in storage server
+	SubListKey := util.FormatSubListKey(args.TargetUserID)
+	if uerr := ts.lib.RemoveFromList(UserKey, SubListKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply *tribrpc.GetSubscriptionsReply) error {
-	return errors.New("not implemented")
+	fmt.Println("GetSubscription")
+	defer fmt.Println("GetSubscription Done")
+	UserKey := util.FormatUserKey(args.UserID)
+	// first check UserID
+	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	// get subscribtion from storage server
+	UserIDs, err := ts.lib.GetList(UserKey)
+	if err != nil {
+		return err
+	}
+	reply.UserIDs = UserIDs
+	fmt.Println(UserIDs)
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {

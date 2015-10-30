@@ -63,7 +63,15 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 }
 
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
-	return errors.New("not implemented")
+	if Value, found := ss.ItemMap[args.Key]; found {
+		reply.Status = storagerpc.OK
+		reply.Value = Value
+		Lease := &storagerpc.Lease{Granted: false, ValidSeconds: 5}
+		reply.Lease = *Lease
+		return nil
+	}
+	reply.Status = storagerpc.KeyNotFound
+	return errors.New("Key Not Found")
 }
 
 func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
@@ -71,7 +79,13 @@ func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.D
 }
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
-	return errors.New("not implemented")
+	// assuem userID exists
+	fmt.Println("GET LIST")
+	reply.Status = storagerpc.OK
+	reply.Value = ss.ListMap[args.Key]
+	Lease := &storagerpc.Lease{Granted: false, ValidSeconds: 5}
+	reply.Lease = *Lease
+	return nil
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
@@ -87,9 +101,39 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	return errors.New("not implemented")
+	// assume userID exists
+	list := ss.ListMap[args.Key]
+	i := FindPos(list, args.Value)
+	if i != -1 { // already exists
+		reply.Status = storagerpc.ItemExists
+		return errors.New("Item Exists")
+	}
+	list = append(list, args.Value)
+	ss.ListMap[args.Key] = list
+	// ss.ListMap[args.Key] = append(ss.ListMap[args.Key], args.Value)
+	reply.Status = storagerpc.OK
+	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	return errors.New("not implemented")
+	// assume userID exists
+	list := ss.ListMap[args.Key]
+	i := FindPos(list, args.Value)
+	if i == -1 { // not found in slice
+		reply.Status = storagerpc.ItemNotFound
+		return errors.New("Item Not Found")
+	}
+	list = append(list[:i], list[i+1:]...)
+	ss.ListMap[args.Key] = list
+	reply.Status = storagerpc.OK
+	return nil
+}
+
+func FindPos(s []string, value string) int {
+	for p, v := range s {
+		if v == value {
+			return p
+		}
+	}
+	return -1
 }
