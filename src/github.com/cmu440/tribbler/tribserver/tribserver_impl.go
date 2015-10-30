@@ -57,7 +57,6 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 	fmt.Println("CreatUser")
 	defer fmt.Println("CreatUser Done")
-	// fmt.Println(ts.lib)
 	err := ts.lib.Put(args.UserID, "hello") // Put is used only once
 	if err != nil {
 		reply.Status = tribrpc.Exists
@@ -65,7 +64,6 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 	}
 	reply.Status = tribrpc.OK
 	return nil
-	// return errors.New("not implemented")
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {

@@ -1,7 +1,7 @@
 package storageserver
 
 import (
-	"container/list"
+	// "container/list"
 	"errors"
 	"fmt"
 	"net"
@@ -13,10 +13,8 @@ import (
 )
 
 type storageServer struct {
-	GetMap     map[string]string     // store created user state
-	GetListMap map[string]*list.List // each node stores the PostKey for a specific post
-	DataMap    map[string]string     // PostKey to value
-
+	ItemMap map[string]string   // PostKey to value
+	ListMap map[string][]string // key defined in util
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -30,9 +28,8 @@ type storageServer struct {
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
 
 	storageServer := new(storageServer)
-	storageServer.GetMap = make(map[string]string)
-	storageServer.GetListMap = make(map[string]*list.List)
-	storageServer.DataMap = make(map[string]string)
+	storageServer.ItemMap = make(map[string]string)
+	storageServer.ListMap = make(map[string][]string)
 
 	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
 	// for checkpoint, ignore masterServerHostPort first, but need to implement in the future
@@ -79,12 +76,12 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	// check if exists first
-	if _, found := ss.GetMap[args.Key]; found {
+	if _, found := ss.ItemMap[args.Key]; found {
 		reply.Status = storagerpc.ItemExists
-		return errors.New("client already exists")
+		return errors.New("Data already exists")
 	}
 	// does not exist
-	ss.GetMap[args.Key] = args.Value
+	ss.ItemMap[args.Key] = args.Value
 	reply.Status = storagerpc.OK
 	return nil
 }

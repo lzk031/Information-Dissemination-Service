@@ -6,6 +6,7 @@ import (
 	"net/rpc"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
+	"github.com/cmu440/tribbler/util"
 )
 
 type libstore struct {
@@ -53,8 +54,8 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
-
-	args := &storagerpc.PutArgs{Key: key, Value: value}
+	UserKey := util.FormatUserKey(key)
+	args := &storagerpc.PutArgs{Key: UserKey, Value: value}
 	var reply storagerpc.PutReply
 	if err := ls.lib.Call("StorageServer.Put", args, &reply); err != nil {
 		return err
