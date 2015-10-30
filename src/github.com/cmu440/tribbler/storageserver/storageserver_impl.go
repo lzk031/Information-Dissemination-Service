@@ -71,7 +71,7 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 		return nil
 	}
 	reply.Status = storagerpc.KeyNotFound
-	return errors.New("Key Not Found")
+	return nil
 }
 
 func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
@@ -83,7 +83,7 @@ func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.D
 	}
 	// not found
 	reply.Status = storagerpc.ItemNotFound
-	return errors.New("Delete Item not found")
+	return nil
 }
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
@@ -96,12 +96,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	// check if exists first
-	if _, found := ss.ItemMap[args.Key]; found {
-		reply.Status = storagerpc.ItemExists
-		return errors.New("Data already exists")
-	}
-	// does not exist
+
 	ss.ItemMap[args.Key] = args.Value
 	reply.Status = storagerpc.OK
 	return nil
@@ -113,7 +108,7 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 	i := FindPos(list, args.Value)
 	if i != -1 { // already exists
 		reply.Status = storagerpc.ItemExists
-		return errors.New("Item Exists")
+		return nil
 	}
 	list = append(list, args.Value)
 	ss.ListMap[args.Key] = list
@@ -127,7 +122,7 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	i := FindPos(list, args.Value)
 	if i == -1 { // not found in slice
 		reply.Status = storagerpc.ItemNotFound
-		return errors.New("Item Not Found")
+		return nil
 	}
 	list = append(list[:i], list[i+1:]...)
 	ss.ListMap[args.Key] = list
