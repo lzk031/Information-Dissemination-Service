@@ -131,6 +131,7 @@ func checkSubscriptions(subs, expectedSubs []string) bool {
 // Check tribbles
 func checkTribbles(tribbles, expectedTribbles []tribrpc.Tribble) bool {
 	if len(tribbles) != len(expectedTribbles) {
+		fmt.Println("1")
 		LOGE.Printf("FAIL: incorrect tribbles %v, expected tribbles %v\n", tribbles, expectedTribbles)
 		failCount++
 		return true
@@ -140,19 +141,26 @@ func checkTribbles(tribbles, expectedTribbles []tribrpc.Tribble) bool {
 		if tribbles[i].UserID != expectedTribbles[i].UserID {
 			LOGE.Printf("FAIL: incorrect tribbles %v, expected tribbles %v\n", tribbles, expectedTribbles)
 			failCount++
+			fmt.Println("2")
 			return true
 		}
 		if tribbles[i].Contents != expectedTribbles[i].Contents {
 			LOGE.Printf("FAIL: incorrect tribbles %v, expected tribbles %v\n", tribbles, expectedTribbles)
 			failCount++
+			fmt.Println("3")
 			return true
 		}
+		// fmt.Println(tribbles[i].Posted.UnixNano())
+		// fmt.Println(expectedTribbles[i].Posted.UnixNano())
 		if tribbles[i].Posted.UnixNano() < lastTime {
 			LOGE.Println("FAIL: tribble timestamps not in reverse chronological order")
 			failCount++
+			fmt.Println("4")
 			return true
 		}
 		lastTime = tribbles[i].Posted.UnixNano()
+		// fmt.Println("LastTime")
+		// fmt.Println(lastTime)
 	}
 	return false
 }
@@ -587,6 +595,8 @@ func testGetTribblesManyTribbles() {
 		return
 	}
 	if checkTribbles(tribbles, expectedTribbles) {
+		fmt.Println(tribbles)
+		fmt.Println(expectedTribbles)
 		return
 	}
 	if checkLimits(200, 30000) {
@@ -669,6 +679,8 @@ func testGetTribblesBySubscriptionFewTribbles() {
 		return
 	}
 	if checkTribbles(tribbles, expectedTribbles) {
+		fmt.Println(tribbles)
+		fmt.Println(expectedTribbles)
 		return
 	}
 	if checkLimits(20, 2000) {
