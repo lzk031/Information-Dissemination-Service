@@ -13,7 +13,7 @@ import (
 )
 
 type tribServer struct {
-	lib *libstore.Libstore
+	lib libstore.Libstore
 }
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
@@ -34,8 +34,7 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 	}
 
 	// Wrap the tribServer before registering it for RPC.
-	err = rpc.RegisterName("TribServer", tribrpc.Wrap(tribServer))
-	if err != nil {
+	if err := rpc.RegisterName("TribServer", tribrpc.Wrap(tribServer)); err != nil {
 		fmt.Println("Error on TribServer RegisterName", err)
 		return nil, err
 	}
@@ -48,7 +47,8 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 	// Create LibStoreServer
 	// Lease Mode 0 - Never
 	lib, _ := libstore.NewLibstore(masterServerHostPort, myHostPort, 0)
-	tribServer.lib = &lib
+	fmt.Println(lib)
+	tribServer.lib = lib
 
 	return tribServer, nil
 
@@ -57,9 +57,13 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 	fmt.Println("CreatUser")
 	defer fmt.Println("CreatUser Done")
-
-	ts.lib.Put(args.UserID, "hello") // Put is used only once
-
+	// fmt.Println(ts.lib)
+	err := ts.lib.Put(args.UserID, "hello") // Put is used only once
+	if err != nil {
+		reply.Status = tribrpc.Exists
+		return nil
+	}
+	reply.Status = tribrpc.OK
 	return nil
 	// return errors.New("not implemented")
 }

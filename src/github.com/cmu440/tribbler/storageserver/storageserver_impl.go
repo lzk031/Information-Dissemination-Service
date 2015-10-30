@@ -1,6 +1,7 @@
 package storageserver
 
 import (
+	"container/list"
 	"errors"
 	"fmt"
 	"net"
@@ -12,7 +13,10 @@ import (
 )
 
 type storageServer struct {
-	// TODO: implement this!
+	GetMap     map[string]string     // store created user state
+	GetListMap map[string]*list.List // each node stores the PostKey for a specific post
+	DataMap    map[string]string     // PostKey to value
+
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -26,6 +30,9 @@ type storageServer struct {
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
 
 	storageServer := new(storageServer)
+	storageServer.GetMap = make(map[string]string)
+	storageServer.GetListMap = make(map[string]*list.List)
+	storageServer.DataMap = make(map[string]string)
 
 	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
 	// for checkpoint, ignore masterServerHostPort first, but need to implement in the future
@@ -37,8 +44,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	}
 
 	// Wrap the Server before registering it for RPC.
-	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(storageServer))
-	if err != nil {
+	if err = rpc.RegisterName("StorageServer", storagerpc.Wrap(storageServer)); err != nil {
 		fmt.Println("Error on StorageServer RegisterName", err)
 		return nil, err
 	}
@@ -72,7 +78,15 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	return errors.New("not implemented")
+	// check if exists first
+	if _, found := ss.GetMap[args.Key]; found {
+		reply.Status = storagerpc.ItemExists
+		return errors.New("client already exists")
+	}
+	// does not exist
+	ss.GetMap[args.Key] = args.Value
+	reply.Status = storagerpc.OK
+	return nil
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {

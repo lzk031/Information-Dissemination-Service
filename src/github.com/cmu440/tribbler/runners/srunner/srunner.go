@@ -5,7 +5,6 @@ package main
 import (
 	crand "crypto/rand"
 	"flag"
-	"fmt"
 	"log"
 	"math"
 	"math/big"
@@ -47,7 +46,6 @@ func main() {
 	if err != nil {
 		log.Fatalln("Failed to create storage server:", err)
 	}
-	fmt.Println("here")
 	// Run the storage server forever.
 	select {}
 }

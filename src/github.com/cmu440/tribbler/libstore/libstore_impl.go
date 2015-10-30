@@ -2,6 +2,7 @@ package libstore
 
 import (
 	"errors"
+	"fmt"
 	"net/rpc"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
@@ -40,6 +41,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	// code copied from client
 	lib, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
+		fmt.Println("Error: NewLibstore DialHTTP:", err)
 		return nil, err
 	}
 	// rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
@@ -51,7 +53,13 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
-	return errors.New("not implemented")
+
+	args := &storagerpc.PutArgs{Key: key, Value: value}
+	var reply storagerpc.PutReply
+	if err := ls.lib.Call("StorageServer.Put", args, &reply); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (ls *libstore) Delete(key string) error {
