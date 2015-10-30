@@ -2,7 +2,6 @@ package tribserver
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -70,8 +69,8 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 	fmt.Println("CreatUser")
 	defer fmt.Println("CreatUser Done")
-	// UserKey := util.FormatUserKey(args.UserID)
-	if err := ts.lib.Put(args.UserID, "I will never be deleted!:D"); err != nil {
+	UserKey := util.FormatUserKey(args.UserID)
+	if err := ts.lib.Put(UserKey, "I will never be deleted!:D"); err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
 	}
@@ -219,7 +218,6 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 	// UserID exists
 	TribListKey := util.FormatTribListKey(args.UserID)
-	// tribbleBytesSlice, err := ts.lib.GetList(TribListKey)
 	PostKeySliceNaive, err := ts.lib.GetList(TribListKey)
 	if err != nil {
 		return err
@@ -246,7 +244,50 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
-	return errors.New("not implemented")
+	fmt.Println("GetTribbleBySubscription")
+	defer fmt.Println("GetTribbleBySubscription Done")
+	UserKey := util.FormatUserKey(args.UserID)
+	// first check UserID
+	if _, uerr := ts.lib.Get(UserKey); uerr != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return uerr
+	}
+	// then retreive the subscription list
+	UserIDs, err := ts.lib.GetList(UserKey)
+	if err != nil {
+		return err
+	}
+	// GetTribbles One by One
+	PostKeySliceNaiveAppend := make([]string, 0)
+	for _, UserID := range UserIDs {
+		// parse UserID
+		parts := strings.Split(UserID, ":")
+		TribListKey := util.FormatTribListKey(parts[0])
+		PostKeySliceNaive, err := ts.lib.GetList(TribListKey)
+		if err != nil {
+			return err
+		}
+		PostKeySliceNaiveAppend = append(PostKeySliceNaiveAppend, PostKeySliceNaive...)
+	}
+	// sort PostKeySliceNaiveAppendfmt.Println("PostKeySliceNaiveAppend")
+	PostKeySlice, _ := ts.OneHundredPostKey(PostKeySliceNaiveAppend)
+	// fetch marshalled tribbles and then unmarshall
+	tribbleSlice := make([]tribrpc.Tribble, len(PostKeySlice))
+	for i, PostKey := range PostKeySlice {
+		// fetch tribble by PostKey
+		tribbleBytes, perr := ts.lib.Get(PostKey)
+		if perr != nil {
+			reply.Status = tribrpc.NoSuchPost
+			return perr
+		}
+		// unmarshal
+		var tribble tribrpc.Tribble
+		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
+		tribbleSlice[i] = tribble
+	}
+	reply.Tribbles = tribbleSlice
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 // OneHundeedPostKey sort the string slice by their timestamp and pick top 100 tibbles
@@ -267,7 +308,6 @@ func (ts *tribServer) Sort(PostKeySlice []string) []string {
 	KeySliceSort := make([]string, len(PostKeySlice))
 	// extract Posted time to sort
 	for i, postKey := range PostKeySlice {
-		fmt.Println(postKey)
 		PostKeyParts := strings.Split(postKey, "_")
 		posted, _ := strconv.ParseInt(PostKeyParts[1], 16, 64)
 		keyForSort := &KeyForSort{Posted: posted, PostKey: postKey}
