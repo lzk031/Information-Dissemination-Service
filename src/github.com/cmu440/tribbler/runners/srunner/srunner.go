@@ -46,7 +46,6 @@ func main() {
 	if err != nil {
 		log.Fatalln("Failed to create storage server:", err)
 	}
-
 	// Run the storage server forever.
 	select {}
 }
