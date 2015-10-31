@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cmu440/tribbler/libstore"
@@ -18,12 +17,10 @@ import (
 )
 
 type tribServer struct {
-	lib   libstore.Libstore
-	mutex *sync.Mutex
+	lib libstore.Libstore
 }
 
 type KeySliceForSort []KeyForSort
-type TribbleSlice []tribrpc.Tribble
 
 type KeyForSort struct {
 	Posted  int64
@@ -39,7 +36,7 @@ type KeyForSort struct {
 func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) {
 
 	tribServer := new(tribServer)
-	tribServer.mutex = &sync.Mutex{}
+
 	// Create the server socket that will listen for incoming RPCs.
 	listener, err := net.Listen("tcp", myHostPort)
 	if err != nil {
@@ -165,7 +162,6 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	if merr != nil {
 		return merr
 	}
-
 	// postkey
 	PostKey := util.FormatPostKey(args.UserID, tribble.Posted.UnixNano())
 	if err := ts.lib.Put(PostKey, string(tribBytes)); err != nil {
@@ -222,7 +218,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	// UserID exists
 	TribListKey := util.FormatTribListKey(args.UserID)
 	PostKeySliceNaive, _ := ts.lib.GetList(TribListKey)
-	PostKeySlice, _ := ts.SortPostKey(150, PostKeySliceNaive)
+	PostKeySlice, _ := ts.SortPostKey(100, PostKeySliceNaive)
 	// fetch marshalled tribbles and then unmarshall
 	tribbleSlice := make([]tribrpc.Tribble, len(PostKeySlice))
 	for i, PostKey := range PostKeySlice {
@@ -237,11 +233,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
 		tribbleSlice[i] = tribble
 	}
-	if len(tribbleSlice) > 100 {
-		reply.Tribbles = tribbleSlice[:100]
-	} else {
-		reply.Tribbles = tribbleSlice
-	}
+	reply.Tribbles = tribbleSlice
 	reply.Status = tribrpc.OK
 	return nil
 }
@@ -266,7 +258,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		PostKeySliceNaive, _ := ts.lib.GetList(TribListKey)
 		PostKeySliceNaiveAppend = append(PostKeySliceNaiveAppend, PostKeySliceNaive...)
 	}
-	PostKeySlice, _ := ts.SortPostKey(150, PostKeySliceNaiveAppend)
+	PostKeySlice, _ := ts.SortPostKey(100, PostKeySliceNaiveAppend)
 	// fetch marshalled tribbles and then unmarshall
 	tribbleSlice := make([]tribrpc.Tribble, len(PostKeySlice))
 	for i, PostKey := range PostKeySlice {
@@ -281,11 +273,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
 		tribbleSlice[i] = tribble
 	}
-	if len(tribbleSlice) > 100 {
-		reply.Tribbles = tribbleSlice[:100]
-	} else {
-		reply.Tribbles = tribbleSlice
-	}
+	reply.Tribbles = tribbleSlice
 	reply.Status = tribrpc.OK
 	return nil
 }
