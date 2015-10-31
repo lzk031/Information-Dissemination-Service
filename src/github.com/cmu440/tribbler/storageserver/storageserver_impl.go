@@ -1,12 +1,11 @@
 package storageserver
 
 import (
-	// "container/list"
-
 	"fmt"
 	"net"
 	"net/http"
 	"net/rpc"
+	"sort"
 	"strconv"
 	"time"
 
@@ -14,13 +13,29 @@ import (
 )
 
 type storageServer struct {
-	ItemMap  map[string]string   // PostKey to value
-	ListMap  map[string][]string // key defined in util
-	numNodes int                 // number of storage servers expected
+	ItemMap        map[string]string   // PostKey to value
+	ListMap        map[string][]string // key defined in util
+	numNodes       int                 // number of storage servers expected
+	AllServerReady bool
 	// for slave servers
 	Ready chan bool
 	// for master servers
 	ServerNodes []storagerpc.Node
+}
+
+type NodeSlice []storagerpc.Node
+
+func (key NodeSlice) Len() int {
+	return len(key)
+}
+
+func (key NodeSlice) Swap(i, j int) {
+	key[i], key[j] = key[j], key[i]
+	return
+}
+
+func (key NodeSlice) Less(i, j int) bool {
+	return key[i].NodeID < key[j].NodeID // in asc order
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -32,7 +47,7 @@ type storageServer struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-
+	defer fmt.Println("StorageServer Created")
 	storageServer := new(storageServer)
 	storageServer.ItemMap = make(map[string]string)
 	storageServer.ListMap = make(map[string][]string)
@@ -64,7 +79,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	storageServer.Ready = make(chan bool)
 	slave, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
-		fmt.Println("Error: NewLibstore DialHTTP:", err)
+		fmt.Println("Error: Slave StorageServer DialHTTP:", err)
 		return nil, err
 	}
 	go func() {
@@ -96,6 +111,12 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
+	if ss.AllServerReady {
+		reply.Status = storagerpc.OK
+		reply.Servers = ss.ServerNodes
+		return nil
+	}
+
 	found := false
 	for _, ServerNode := range ss.ServerNodes {
 		if ServerNode == args.ServerInfo {
@@ -108,15 +129,22 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 		ss.ServerNodes = append(ss.ServerNodes, *node)
 	}
 	if len(ss.ServerNodes) == ss.numNodes { // all servers available
-		reply.Status = storagerpc.OK
+		// sort ServerNodes
+		ServerNodes := ss.ServerNodes
+		NodeSlice := NodeSlice(ServerNodes)
+		sort.Sort(NodeSlice)
+		ss.ServerNodes = []storagerpc.Node(NodeSlice)
 		reply.Servers = ss.ServerNodes
+		reply.Status = storagerpc.OK
 		return nil
 	}
+
 	reply.Status = storagerpc.NotReady
 	return nil
 }
 
 func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *storagerpc.GetServersReply) error {
+	defer fmt.Println("GetServers Done")
 	if len(ss.ServerNodes) == ss.numNodes { // all servers available
 		reply.Status = storagerpc.OK
 		reply.Servers = ss.ServerNodes
@@ -161,6 +189,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
+	defer fmt.Println("Put")
 	ss.ItemMap[args.Key] = args.Value
 	reply.Status = storagerpc.OK
 	return nil
