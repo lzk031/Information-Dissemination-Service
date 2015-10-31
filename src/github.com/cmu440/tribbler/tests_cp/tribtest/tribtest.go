@@ -716,6 +716,8 @@ func testGetTribblesBySubscriptionManyTribbles() {
 		return
 	}
 	if checkTribbles(tribbles, expectedTribbles) {
+		fmt.Println(tribbles)
+		fmt.Println(expectedTribbles)
 		return
 	}
 	if checkLimits(200, 30000) {
@@ -751,6 +753,8 @@ func testGetTribblesBySubscriptionManyTribbles2() {
 		return
 	}
 	if checkTribbles(tribbles, expectedTribbles) {
+		// fmt.Println(tribbles)
+		// fmt.Println(expectedTribbles)
 		return
 	}
 	if checkLimits(200, 30000) {
@@ -788,7 +792,7 @@ func testGetTribblesBySubscriptionManyTribbles3() {
 	postTribble("tribUser7c", "should not see this old msg")
 	postTribble("tribUser8c", "should not see this old msg")
 	postTribble("tribUser9c", "should not see this old msg")
-	longContents := strings.Repeat("this sentence is 30 char long\n", 30)
+	longContents := strings.Repeat("this sentence is 30 char long\n", 1)
 	for i := 0; i < 100; i++ {
 		for j := 1; j <= 9; j++ {
 			postTribble(fmt.Sprintf("tribUser%dc", j), longContents)
@@ -807,6 +811,8 @@ func testGetTribblesBySubscriptionManyTribbles3() {
 		return
 	}
 	if checkTribbles(tribbles, expectedTribbles) {
+		// fmt.Println(tribbles)
+		// fmt.Println(expectedTribbles)
 		return
 	}
 	if checkLimits(200, 200000) {

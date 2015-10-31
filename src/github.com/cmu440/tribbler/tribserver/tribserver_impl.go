@@ -98,8 +98,6 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 		return nil
 	}
 	// if both keys exist in storage server
-	// UserKey := util.FormatUserKey(args.UserID)
-	// SubListKey := util.FormatSubListKey(args.TargetUserID)
 	if err := ts.lib.AppendToList(args.UserID, args.TargetUserID); err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
@@ -123,8 +121,6 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 		return nil
 	}
 	// if both keys exist in storage server
-	// UserKey := util.FormatUserKey(args.UserID)
-	// SubListKey := util.FormatSubListKey(args.TargetUserID)
 	if uerr := ts.lib.RemoveFromList(args.UserID, args.TargetUserID); uerr != nil {
 		reply.Status = tribrpc.NoSuchTargetUser
 		return nil
@@ -171,7 +167,7 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	}
 
 	// postkey
-	PostKey := util.FormatPostKey(args.UserID, tribble.Posted.Unix())
+	PostKey := util.FormatPostKey(args.UserID, tribble.Posted.UnixNano())
 	if err := ts.lib.Put(PostKey, string(tribBytes)); err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
@@ -179,15 +175,12 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 
 	// Tribble list key
 	TribListKey := util.FormatTribListKey(args.UserID)
-	ts.mutex.Lock()
 	err := ts.lib.AppendToList(TribListKey, PostKey)
-	ts.mutex.Unlock()
 	if err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
 	}
 	reply.PostKey = PostKey
-	// fmt.Println(PostKey)
 	reply.Status = tribrpc.OK
 	return nil
 }
@@ -229,7 +222,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	// UserID exists
 	TribListKey := util.FormatTribListKey(args.UserID)
 	PostKeySliceNaive, _ := ts.lib.GetList(TribListKey)
-	PostKeySlice, _ := ts.OneHundredPostKey(PostKeySliceNaive)
+	PostKeySlice, _ := ts.SortPostKey(150, PostKeySliceNaive)
 	// fetch marshalled tribbles and then unmarshall
 	tribbleSlice := make([]tribrpc.Tribble, len(PostKeySlice))
 	for i, PostKey := range PostKeySlice {
@@ -242,35 +235,15 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 		// unmarshal
 		var tribble tribrpc.Tribble
 		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
-		tribbleSlice[len(PostKeySlice)-1-i] = tribble
+		tribbleSlice[i] = tribble
 	}
-	// tribbleSilce = ts.AccurateSort(tribbleSlice)
-	TribbleSlice := slice2type(tribbleSlice)
-	sort.Sort(TribbleSlice)
-
-	reply.Tribbles = tribbleSlice
+	if len(tribbleSlice) > 100 {
+		reply.Tribbles = tribbleSlice[:100]
+	} else {
+		reply.Tribbles = tribbleSlice
+	}
 	reply.Status = tribrpc.OK
 	return nil
-}
-
-func slice2type(slice []tribrpc.Tribble) TribbleSlice {
-	tribbleslice := make(TribbleSlice, len(slice))
-	for i, tribble := range slice {
-		tribbleslice[i] = tribble
-	}
-	return tribbleslice
-}
-
-func (tribbleSlice TribbleSlice) Len() int {
-	return len(tribbleSlice)
-}
-
-func (tribbleSlice TribbleSlice) Swap(i, j int) {
-	tribbleSlice[i], tribbleSlice[j] = tribbleSlice[j], tribbleSlice[i]
-}
-
-func (tribbleSlice TribbleSlice) Less(i, j int) bool {
-	return tribbleSlice[i].Posted.Sub(tribbleSlice[j].Posted) < 0
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
@@ -293,7 +266,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		PostKeySliceNaive, _ := ts.lib.GetList(TribListKey)
 		PostKeySliceNaiveAppend = append(PostKeySliceNaiveAppend, PostKeySliceNaive...)
 	}
-	PostKeySlice, _ := ts.OneHundredPostKey(PostKeySliceNaiveAppend)
+	PostKeySlice, _ := ts.SortPostKey(150, PostKeySliceNaiveAppend)
 	// fetch marshalled tribbles and then unmarshall
 	tribbleSlice := make([]tribrpc.Tribble, len(PostKeySlice))
 	for i, PostKey := range PostKeySlice {
@@ -306,22 +279,24 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		// unmarshal
 		var tribble tribrpc.Tribble
 		_ = json.Unmarshal([]byte(tribbleBytes), &tribble)
-		tribbleSlice[len(PostKeySlice)-1-i] = tribble
+		tribbleSlice[i] = tribble
 	}
-	TribbleSlice := slice2type(tribbleSlice)
-	sort.Sort(TribbleSlice)
-	reply.Tribbles = tribbleSlice
+	if len(tribbleSlice) > 100 {
+		reply.Tribbles = tribbleSlice[:100]
+	} else {
+		reply.Tribbles = tribbleSlice
+	}
 	reply.Status = tribrpc.OK
 	return nil
 }
 
 // OneHundeedPostKey sort the string slice by their timestamp and pick top 100 tibbles
 // if input slice has less than 100 tribbles, then return all tribbles
-func (ts *tribServer) OneHundredPostKey(KeySlice []string) (OneHundredKey []string, err error) {
+func (ts *tribServer) SortPostKey(n int, KeySlice []string) (OneHundredKey []string, err error) {
 	// sort the slice by timestamp
 	KeySliceSort := ts.Sort(KeySlice)
-	if len(KeySliceSort) > 100 {
-		OneHundredKey = KeySliceSort[:100]
+	if len(KeySliceSort) > n {
+		OneHundredKey = KeySliceSort[:n]
 	} else {
 		OneHundredKey = KeySliceSort
 	}
