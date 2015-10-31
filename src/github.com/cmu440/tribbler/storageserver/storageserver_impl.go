@@ -19,7 +19,6 @@ type storageServer struct {
 	numNodes int                 // number of storage servers expected
 	// for slave servers
 	Ready chan bool
-
 	// for master servers
 	ServerNodes []storagerpc.Node
 }
@@ -162,7 +161,6 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-
 	ss.ItemMap[args.Key] = args.Value
 	reply.Status = storagerpc.OK
 	return nil
