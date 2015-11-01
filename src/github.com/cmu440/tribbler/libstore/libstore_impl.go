@@ -54,19 +54,6 @@ type cacheitem struct {
 
 type NodeSlice []storagerpc.Node
 
-func (key NodeSlice) Len() int {
-	return len(key)
-}
-
-func (key NodeSlice) Swap(i, j int) {
-	key[i], key[j] = key[j], key[i]
-	return
-}
-
-func (key NodeSlice) Less(i, j int) bool {
-	return key[i].NodeID < key[j].NodeID // in asc order
-}
-
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
 // is the master storage server's host:port. myHostPort is this Libstore's host:port
 // (i.e. the callback address that the storage servers should use to send back
@@ -110,7 +97,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	// listen to master server
 	ssRPC, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
-		fmt.Println("Error: NewLibstore DialHTTP:", err)
+		// fmt.Println("Error: NewLibstore DialHTTP:", err)
 		return nil, err
 	}
 	ls.ssRPC[masterServerHostPort] = ssRPC
@@ -126,7 +113,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	sort.Sort(Servers)
 	ls.ServerNodes = []storagerpc.Node(Servers)
 	// create rpc to all storage servers
-	if aerr := ls.AddStorageRPC(); aerr != nil {
+	if aerr := ls.RegisterStorageRPC(); aerr != nil {
 		return nil, aerr
 	}
 	go ls.CacheHandler()
@@ -147,54 +134,6 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	return ls, nil
 }
 
-func (ls *libstoreServer) CacheHandler() {
-	for {
-		select {
-		case key := <-ls.checkCache:
-			CacheItem := ls.CheckCache(key)
-			ls.checkCacheReply <- CacheItem
-		case key := <-ls.revokeCache:
-			delete(ls.Cache, key)
-			ls.CacheReply <- true
-		case pack := <-ls.addCache:
-			ls.Cache[pack.Key] = pack.Item
-			ls.CacheReply <- true
-		}
-	}
-}
-
-func (ls *libstoreServer) CheckCache(key string) cacheitem {
-	item, found := ls.Cache[key]
-	if found { // item already in cache
-		return item
-	}
-	status := ls.CheckRecord(key)
-	ItemReturn := &cacheitem{Status: status}
-	// ItemReturn = &cacheitem{Status: status, Item: item}
-	return *ItemReturn
-}
-
-func (ls *libstoreServer) CheckRecord(key string) CacheStatus {
-	record, found := ls.KeyRecord[key]
-	if !found {
-		record = make([]time.Time, 0)
-	}
-	if len(record) < storagerpc.QueryCacheThresh {
-		record = append(record, time.Now())
-		ls.KeyRecord[key] = record // update record
-		return SendQuery
-	}
-	// check timestamp
-	timestamp := record[len(record)-storagerpc.QueryCacheThresh]
-	record = append(record, time.Now())
-	ls.KeyRecord[key] = record[(len(record) - storagerpc.QueryCacheThresh):] // update record
-	duration := -timestamp.Sub(time.Now())
-	if duration < storagerpc.QueryCacheSeconds { // want lease
-		return WantLease
-	}
-	return SendQuery
-}
-
 func (ls *libstoreServer) ContactMasterServer(masterServerHostPort string) {
 	ssRPC := ls.ssRPC[masterServerHostPort]
 	args := &storagerpc.GetServersArgs{}
@@ -212,7 +151,76 @@ func (ls *libstoreServer) ContactMasterServer(masterServerHostPort string) {
 	return
 }
 
-func (ls *libstoreServer) AddStorageRPC() error {
+/*
+ *	CacheHandler
+ *
+ * 	Handle all cache-involved operations
+ */
+func (ls *libstoreServer) CacheHandler() {
+	for {
+		select {
+		case key := <-ls.checkCache:
+			CacheItem := ls.CheckCache(key)
+			ls.checkCacheReply <- CacheItem
+		case key := <-ls.revokeCache:
+			delete(ls.Cache, key)
+			ls.CacheReply <- true
+		case pack := <-ls.addCache:
+			ls.Cache[pack.Key] = pack.Item
+			ls.CacheReply <- true
+		}
+	}
+}
+
+/*
+ *	CheckCache
+ *
+ * 	check if the item is already in the cache
+ */
+func (ls *libstoreServer) CheckCache(key string) cacheitem {
+	item, found := ls.Cache[key]
+	if found { // item already in cache
+		return item
+	}
+	status := ls.CheckRecord(key)
+	ItemReturn := &cacheitem{Status: status}
+	// ItemReturn = &cacheitem{Status: status, Item: item}
+	return *ItemReturn
+}
+
+/*
+ *	CheckRecord
+ *
+ * 	Check the recent queries libstore server has sent
+ */
+func (ls *libstoreServer) CheckRecord(key string) CacheStatus {
+	record, found := ls.KeyRecord[key]
+	if !found {
+		record = make([]time.Time, 0)
+	}
+	if len(record) < storagerpc.QueryCacheThresh {
+		record = append(record, time.Now())
+		ls.KeyRecord[key] = record // update record
+		return SendQuery
+	}
+	// check timestamp
+	timestamp := record[len(record)-storagerpc.QueryCacheThresh]
+	record = append(record, time.Now())
+	ls.KeyRecord[key] = record[(len(record) - storagerpc.QueryCacheThresh):] // update record
+	// duration := -timestamp.Sub(time.Now())
+	duration := time.Since(timestamp).Seconds()
+	if duration < storagerpc.QueryCacheSeconds { // want lease
+		return WantLease
+	}
+	return SendQuery
+}
+
+/*
+ *	RegisterStorageRPC
+ *
+ * 	register rpc to all storage servers
+ */
+func (ls *libstoreServer) RegisterStorageRPC() error {
 	for _, node := range ls.ServerNodes {
 		if _, found := ls.ssRPC[node.HostPort]; !found {
 			ssRPC, err := rpc.DialHTTP("tcp", node.HostPort)
@@ -225,9 +233,14 @@ func (ls *libstoreServer) AddStorageRPC() error {
 	return nil
 }
 
+/*
+ *	FindRPC
+ *
+ * 	perform consistent hashing on different key values and
+ *  find right storage server
+ */
 func (ls *libstoreServer) FindRPC(key string) *rpc.Client {
 	NodeNum := StoreHash(key)
-	// fmt.Println(NodeNum)
 	for _, ServerNode := range ls.ServerNodes {
 		if ServerNode.NodeID >= NodeNum {
 			return ls.ssRPC[ServerNode.HostPort]
@@ -237,6 +250,11 @@ func (ls *libstoreServer) FindRPC(key string) *rpc.Client {
 	return ls.ssRPC[ls.ServerNodes[0].HostPort]
 }
 
+/*
+ *	leaseMode
+ *
+ * 	Force wantlease to be determined by leaseMode
+ */
 func (ls *libstoreServer) leaseMode(wantlease bool) bool {
 	switch ls.LeaseMode {
 	case Never:
@@ -375,4 +393,17 @@ func (ls *libstoreServer) ExpireCache(lease storagerpc.Lease, key string) {
 	<-time.After(time.Duration(lease.ValidSeconds) * time.Second)
 	ls.revokeCache <- key
 	<-ls.CacheReply
+}
+
+func (key NodeSlice) Len() int {
+	return len(key)
+}
+
+func (key NodeSlice) Swap(i, j int) {
+	key[i], key[j] = key[j], key[i]
+	return
+}
+
+func (key NodeSlice) Less(i, j int) bool {
+	return key[i].NodeID < key[j].NodeID // in asc order
 }
