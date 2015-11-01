@@ -78,7 +78,7 @@ func (key NodeSlice) Less(i, j int) bool {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	defer fmt.Println("StorageServer return")
+	// defer fmt.Println("StorageServer return")
 	storageServer := new(storageServer)
 	storageServer.numNodes = numNodes
 	storageServer.ItemMap = make(map[string]string)
@@ -206,7 +206,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 }
 
 func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *storagerpc.GetServersReply) error {
-	defer fmt.Println("GetServers Done")
+	// defer fmt.Println("GetServers Done")
 	if len(ss.ServerNodes) == ss.numNodes { // all servers available
 		reply.Status = storagerpc.OK
 		reply.Servers = ss.ServerNodes

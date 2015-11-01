@@ -21,10 +21,11 @@ const (
 	SendQuery            // item not in cache but does not want lease
 )
 
-type libstore struct {
+type libstoreServer struct {
 	ssRPC       map[string]*rpc.Client // rpc client to storage server
 	ServerNodes []storagerpc.Node
 	MyHostPort  string
+	LeaseMode   LeaseMode
 
 	// critical section
 	Cache     map[string]cacheitem
@@ -91,11 +92,12 @@ func (key NodeSlice) Less(i, j int) bool {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	ls := new(libstore)
+	ls := new(libstoreServer)
 	ls.MyHostPort = myHostPort
 	ls.ssRPC = make(map[string]*rpc.Client)
 	ls.Cache = make(map[string]cacheitem)
 	ls.KeyRecord = make(map[string][]time.Time)
+	ls.LeaseMode = mode
 
 	ls.Ready = make(chan storagerpc.GetServersReply)
 	ls.checkCache = make(chan string)
@@ -145,7 +147,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	return ls, nil
 }
 
-func (ls *libstore) CacheHandler() {
+func (ls *libstoreServer) CacheHandler() {
 	for {
 		select {
 		case key := <-ls.checkCache:
@@ -161,7 +163,7 @@ func (ls *libstore) CacheHandler() {
 	}
 }
 
-func (ls *libstore) CheckCache(key string) cacheitem {
+func (ls *libstoreServer) CheckCache(key string) cacheitem {
 	item, found := ls.Cache[key]
 	if found { // item already in cache
 		return item
@@ -172,7 +174,7 @@ func (ls *libstore) CheckCache(key string) cacheitem {
 	return *ItemReturn
 }
 
-func (ls *libstore) CheckRecord(key string) CacheStatus {
+func (ls *libstoreServer) CheckRecord(key string) CacheStatus {
 	record, found := ls.KeyRecord[key]
 	if !found {
 		record = make([]time.Time, 0)
@@ -193,7 +195,7 @@ func (ls *libstore) CheckRecord(key string) CacheStatus {
 	return SendQuery
 }
 
-func (ls *libstore) ContactMasterServer(masterServerHostPort string) {
+func (ls *libstoreServer) ContactMasterServer(masterServerHostPort string) {
 	ssRPC := ls.ssRPC[masterServerHostPort]
 	args := &storagerpc.GetServersArgs{}
 	var reply storagerpc.GetServersReply
@@ -202,7 +204,6 @@ func (ls *libstore) ContactMasterServer(masterServerHostPort string) {
 		if reply.Status != storagerpc.OK {
 			time.Sleep(1 * time.Second)
 		} else { // Status = OK
-			fmt.Println(reply.Servers)
 			ls.Ready <- reply
 			return
 		}
@@ -211,7 +212,7 @@ func (ls *libstore) ContactMasterServer(masterServerHostPort string) {
 	return
 }
 
-func (ls *libstore) AddStorageRPC() error {
+func (ls *libstoreServer) AddStorageRPC() error {
 	for _, node := range ls.ServerNodes {
 		if _, found := ls.ssRPC[node.HostPort]; !found {
 			ssRPC, err := rpc.DialHTTP("tcp", node.HostPort)
@@ -224,7 +225,7 @@ func (ls *libstore) AddStorageRPC() error {
 	return nil
 }
 
-func (ls *libstore) FindRPC(key string) *rpc.Client {
+func (ls *libstoreServer) FindRPC(key string) *rpc.Client {
 	NodeNum := StoreHash(key)
 	// fmt.Println(NodeNum)
 	for _, ServerNode := range ls.ServerNodes {
@@ -236,9 +237,22 @@ func (ls *libstore) FindRPC(key string) *rpc.Client {
 	return ls.ssRPC[ls.ServerNodes[0].HostPort]
 }
 
-func (ls *libstore) Get(key string) (string, error) {
+func (ls *libstoreServer) leaseMode(wantlease bool) bool {
+	switch ls.LeaseMode {
+	case Never:
+		return false
+	case Always:
+		return true
+	case Normal:
+		return wantlease
+	}
+	return wantlease
+}
+
+func (ls *libstoreServer) Get(key string) (string, error) {
 	// fmt.Println("Lib: Get")
 	// defer fmt.Println("Lib: Get Done")
+	// check lease
 	wantlease := false
 	ls.checkCache <- key
 	item := <-ls.checkCacheReply
@@ -248,6 +262,7 @@ func (ls *libstore) Get(key string) (string, error) {
 	case WantLease:
 		wantlease = true
 	}
+	wantlease = ls.leaseMode(wantlease)
 	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantlease, HostPort: ls.MyHostPort}
 	var reply storagerpc.GetReply
@@ -265,7 +280,7 @@ func (ls *libstore) Get(key string) (string, error) {
 	return reply.Value, nil
 }
 
-func (ls *libstore) Put(key, value string) error {
+func (ls *libstoreServer) Put(key, value string) error {
 	// fmt.Println("Lib: Put")
 	// defer fmt.Println("Lib: Put Done")
 	ssRPC := ls.FindRPC(key)
@@ -278,7 +293,7 @@ func (ls *libstore) Put(key, value string) error {
 	return nil
 }
 
-func (ls *libstore) Delete(key string) error {
+func (ls *libstoreServer) Delete(key string) error {
 	// fmt.Println("Lib: Delete")
 	// defer fmt.Println("Lib: Delete Done")
 	ssRPC := ls.FindRPC(key)
@@ -291,7 +306,7 @@ func (ls *libstore) Delete(key string) error {
 	return nil
 }
 
-func (ls *libstore) GetList(key string) ([]string, error) {
+func (ls *libstoreServer) GetList(key string) ([]string, error) {
 	// fmt.Println("Lib: GetList")
 	// defer fmt.Println("Lib: GetList Done")
 	wantlease := false
@@ -303,9 +318,11 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	case WantLease:
 		wantlease = true
 	}
-	ssRPC := ls.FindRPC(key)
+	wantlease = ls.leaseMode(wantlease)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantlease, HostPort: ls.MyHostPort}
+
 	var reply storagerpc.GetListReply
+	ssRPC := ls.FindRPC(key)
 	_ = ssRPC.Call("StorageServer.GetList", args, &reply)
 	if reply.Status != storagerpc.OK {
 		return nil, errors.New("Error on Lib:GetList")
@@ -320,7 +337,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	return reply.Value, nil
 }
 
-func (ls *libstore) RemoveFromList(key, removeItem string) error {
+func (ls *libstoreServer) RemoveFromList(key, removeItem string) error {
 	// fmt.Println("Lib: RemoveFromList")
 	// defer fmt.Println("Lib: RemoveFromList Done")
 	ssRPC := ls.FindRPC(key)
@@ -333,7 +350,7 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 	return nil
 }
 
-func (ls *libstore) AppendToList(key, newItem string) error {
+func (ls *libstoreServer) AppendToList(key, newItem string) error {
 	// fmt.Println("Lib: AppendToList")
 	// defer fmt.Println("Lib: AppendToList Done")
 	ssRPC := ls.FindRPC(key)
@@ -346,7 +363,7 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 	return nil
 }
 
-func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
+func (ls *libstoreServer) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
 	ls.revokeCache <- args.Key
 	<-ls.CacheReply
 	// key not found ?
@@ -354,7 +371,7 @@ func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storage
 	return nil
 }
 
-func (ls *libstore) ExpireCache(lease storagerpc.Lease, key string) {
+func (ls *libstoreServer) ExpireCache(lease storagerpc.Lease, key string) {
 	<-time.After(time.Duration(lease.ValidSeconds) * time.Second)
 	ls.revokeCache <- key
 	<-ls.CacheReply
