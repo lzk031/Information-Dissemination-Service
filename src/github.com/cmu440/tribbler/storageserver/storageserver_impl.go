@@ -13,14 +13,31 @@ import (
 )
 
 type storageServer struct {
-	ItemMap        map[string]string   // PostKey to value
-	ListMap        map[string][]string // key defined in util
-	numNodes       int                 // number of storage servers expected
-	AllServerReady bool
-	// for slave servers
-	Ready chan bool
-	// for master servers
-	ServerNodes []storagerpc.Node
+	lsRPC          map[string]*rpc.Client // libstore hostport to rpc client
+	ItemMap        map[string]string      // PostKey to value
+	ListMap        map[string][]string    // key defined in util
+	numNodes       int                    // number of storage servers expected
+	ServerNodes    []storagerpc.Node      // only for master server
+	AllServerReady bool                   // only for master server
+	// critical section
+	CacheRecord map[string][]LeaseRecord // key to libstore server hostport
+
+	Ready        chan bool    // only for slave servers
+	addRecord    chan AddPack // key and item
+	delRecord    chan string  // key
+	CallBack     chan string  // key
+	successReply chan bool
+	addRPC       chan string // HostPort
+}
+
+type LeaseRecord struct {
+	HostPort  string
+	timestamp time.Time
+}
+
+type AddPack struct {
+	Key         string
+	LeaseRecord LeaseRecord
 }
 
 type NodeSlice []storagerpc.Node
@@ -47,11 +64,19 @@ func (key NodeSlice) Less(i, j int) bool {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	defer fmt.Println("StorageServer Created")
+	defer fmt.Println("StorageServer return")
 	storageServer := new(storageServer)
+	storageServer.numNodes = numNodes
 	storageServer.ItemMap = make(map[string]string)
 	storageServer.ListMap = make(map[string][]string)
-	storageServer.numNodes = numNodes
+	storageServer.lsRPC = make(map[string]*rpc.Client)
+	storageServer.CacheRecord = make(map[string][]LeaseRecord)
+
+	storageServer.addRecord = make(chan AddPack) // key and item
+	storageServer.delRecord = make(chan string)  // key
+	storageServer.CallBack = make(chan string)   // key
+	storageServer.successReply = make(chan bool)
+	storageServer.addRPC = make(chan string)
 
 	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
 	listener, err := net.Listen("tcp", hostPort)
@@ -107,7 +132,31 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	// serve requests in a background goroutine.
 	rpc.HandleHTTP()
 	go http.Serve(listener, nil)
+	go storageServer.LeaseHandler()
 	return storageServer, nil
+}
+
+func (ss *storageServer) LeaseHandler() {
+	for {
+		select {
+		case pack := <-ss.addRecord:
+			status := ss.AddRecord(pack)
+			ss.successReply <- status
+		case HostPort := <-ss.addRPC:
+			Sussess := ss.AddRPC(HostPort)
+			if !Sussess {
+				fmt.Println("Error on AddRPC")
+				return
+			}
+			ss.successReply <- Sussess
+		case key := <-ss.CallBack:
+			status := ss.LeaseCallBack(key)
+			ss.successReply <- status
+			// case key := <-ss.delRecord:
+			// 	delete(ss.CacheRecord, key)
+			// 	ss.successReply <- true
+		}
+	}
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
@@ -116,7 +165,6 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 		reply.Servers = ss.ServerNodes
 		return nil
 	}
-
 	found := false
 	for _, ServerNode := range ss.ServerNodes {
 		if ServerNode == args.ServerInfo {
@@ -155,15 +203,77 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 	return nil
 }
 
+func (ss *storageServer) AddRecord(pack AddPack) bool {
+	RecordPackSlice, found := ss.CacheRecord[pack.Key]
+	if !found {
+		var leaseRecord []LeaseRecord
+		leaseRecord = append(leaseRecord, pack.LeaseRecord)
+		ss.CacheRecord[pack.Key] = leaseRecord
+		return true
+	}
+	// if already in record, update timestamp
+	for i, recordPack := range RecordPackSlice {
+		if recordPack.HostPort == pack.LeaseRecord.HostPort {
+			recordPack.timestamp = pack.LeaseRecord.timestamp
+			RecordPackSlice[i] = recordPack
+			ss.CacheRecord[pack.Key] = RecordPackSlice
+			return true
+		}
+	}
+	// exists some libserver that has leases but this libserver does not
+	RecordPackSlice = append(RecordPackSlice, pack.LeaseRecord)
+	ss.CacheRecord[pack.Key] = RecordPackSlice
+	return true
+}
+
+func (ss *storageServer) AddRPC(HostPort string) bool {
+	if _, found := ss.lsRPC[HostPort]; !found {
+		lsRPC, derr := rpc.DialHTTP("tcp", HostPort)
+		if derr != nil {
+			return false
+		}
+		ss.lsRPC[HostPort] = lsRPC // add rpc client
+	}
+	return true
+}
+
+func (ss *storageServer) LeaseMaker(args *storagerpc.GetArgs) storagerpc.Lease {
+	if !args.WantLease {
+		Lease := &storagerpc.Lease{Granted: false, ValidSeconds: storagerpc.LeaseSeconds}
+		return *Lease
+	}
+	// WantLease
+	// update hostport
+	ss.addRPC <- args.HostPort // wait for adding RPC
+	<-ss.successReply
+	// renew timestamp
+	leaserecord := &LeaseRecord{timestamp: time.Now(), HostPort: args.HostPort}
+	addPack := &AddPack{Key: args.Key, LeaseRecord: *leaserecord}
+	ss.addRecord <- *addPack // wait for adding lease record
+	<-ss.successReply
+
+	Lease := &storagerpc.Lease{Granted: true, ValidSeconds: storagerpc.LeaseSeconds}
+	return *Lease
+}
+
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
 	if Value, found := ss.ItemMap[args.Key]; found {
 		reply.Status = storagerpc.OK
 		reply.Value = Value
-		Lease := &storagerpc.Lease{Granted: false, ValidSeconds: 5}
-		reply.Lease = *Lease
+		lease := ss.LeaseMaker(args)
+		reply.Lease = lease
 		return nil
 	}
 	reply.Status = storagerpc.KeyNotFound
+	return nil
+}
+
+func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
+	// assuem userID exists
+	reply.Status = storagerpc.OK
+	reply.Value = ss.ListMap[args.Key]
+	lease := ss.LeaseMaker(args)
+	reply.Lease = lease
 	return nil
 }
 
@@ -176,15 +286,6 @@ func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.D
 	}
 	// not found
 	reply.Status = storagerpc.ItemNotFound
-	return nil
-}
-
-func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
-	// assuem userID exists
-	reply.Status = storagerpc.OK
-	reply.Value = ss.ListMap[args.Key]
-	Lease := &storagerpc.Lease{Granted: false, ValidSeconds: 5}
-	reply.Lease = *Lease
 	return nil
 }
 
@@ -221,6 +322,14 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	ss.ListMap[args.Key] = list
 	reply.Status = storagerpc.OK
 	return nil
+}
+
+func (ss *storageServer) LeaseCallBack(key string) bool {
+	// lsRPC := ss.lsRPC[key]
+
+	// args := &{storagerpc.RevokeLeaseArgs: key}
+	// var reply storagerpc.RevokeLeaseReply
+
 }
 
 func FindPos(s []string, value string) int {

@@ -22,7 +22,7 @@ const (
 )
 
 type libstore struct {
-	lib         map[string]*rpc.Client // HostPort to serverRPC
+	ssRPC       map[string]*rpc.Client // rpc client to storage server
 	ServerNodes []storagerpc.Node
 	MyHostPort  string
 
@@ -93,7 +93,7 @@ func (key NodeSlice) Less(i, j int) bool {
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
 	ls := new(libstore)
 	ls.MyHostPort = myHostPort
-	ls.lib = make(map[string]*rpc.Client)
+	ls.ssRPC = make(map[string]*rpc.Client)
 	ls.Cache = make(map[string]cacheitem)
 	ls.KeyRecord = make(map[string][]time.Time)
 
@@ -106,12 +106,12 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	ls.CacheReply = make(chan bool)
 
 	// listen to master server
-	lib, err := rpc.DialHTTP("tcp", masterServerHostPort)
+	ssRPC, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
 		fmt.Println("Error: NewLibstore DialHTTP:", err)
 		return nil, err
 	}
-	ls.lib[masterServerHostPort] = lib
+	ls.ssRPC[masterServerHostPort] = ssRPC
 	go ls.ContactMasterServer(masterServerHostPort)
 
 	// block slave servers
@@ -194,11 +194,11 @@ func (ls *libstore) CheckRecord(key string) CacheStatus {
 }
 
 func (ls *libstore) ContactMasterServer(masterServerHostPort string) {
-	lib := ls.lib[masterServerHostPort]
+	ssRPC := ls.ssRPC[masterServerHostPort]
 	args := &storagerpc.GetServersArgs{}
 	var reply storagerpc.GetServersReply
 	for i := 0; i < 6; i++ { // retry upto 5 times
-		_ = lib.Call("StorageServer.GetServers", args, &reply)
+		_ = ssRPC.Call("StorageServer.GetServers", args, &reply)
 		if reply.Status != storagerpc.OK {
 			time.Sleep(1 * time.Second)
 		} else { // Status = OK
@@ -213,12 +213,12 @@ func (ls *libstore) ContactMasterServer(masterServerHostPort string) {
 
 func (ls *libstore) AddStorageRPC() error {
 	for _, node := range ls.ServerNodes {
-		if _, found := ls.lib[node.HostPort]; !found {
-			lib, err := rpc.DialHTTP("tcp", node.HostPort)
+		if _, found := ls.ssRPC[node.HostPort]; !found {
+			ssRPC, err := rpc.DialHTTP("tcp", node.HostPort)
 			if err != nil {
 				return err
 			}
-			ls.lib[node.HostPort] = lib // add rpc client
+			ls.ssRPC[node.HostPort] = ssRPC // add rpc client
 		}
 	}
 	return nil
@@ -229,11 +229,11 @@ func (ls *libstore) FindRPC(key string) *rpc.Client {
 	// fmt.Println(NodeNum)
 	for _, ServerNode := range ls.ServerNodes {
 		if ServerNode.NodeID >= NodeNum {
-			return ls.lib[ServerNode.HostPort]
+			return ls.ssRPC[ServerNode.HostPort]
 		}
 	}
 	// if cannot find, choose the first node
-	return ls.lib[ls.ServerNodes[0].HostPort]
+	return ls.ssRPC[ls.ServerNodes[0].HostPort]
 }
 
 func (ls *libstore) Get(key string) (string, error) {
@@ -248,12 +248,12 @@ func (ls *libstore) Get(key string) (string, error) {
 	case WantLease:
 		wantlease = true
 	}
-	lib := ls.FindRPC(key)
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantlease, HostPort: ls.MyHostPort}
 	var reply storagerpc.GetReply
-	_ = lib.Call("StorageServer.Get", args, &reply)
+	_ = ssRPC.Call("StorageServer.Get", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return "", errors.New("Error on lib:Get")
+		return "", errors.New("Error on Lib:Get")
 	}
 	if reply.Lease.Granted {
 		item := &cacheitem{Status: Found, Item: reply.Value}
@@ -268,12 +268,12 @@ func (ls *libstore) Get(key string) (string, error) {
 func (ls *libstore) Put(key, value string) error {
 	// fmt.Println("Lib: Put")
 	// defer fmt.Println("Lib: Put Done")
-	lib := ls.FindRPC(key)
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.PutArgs{Key: key, Value: value}
 	var reply storagerpc.PutReply
-	_ = lib.Call("StorageServer.Put", args, &reply)
+	_ = ssRPC.Call("StorageServer.Put", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:Put")
+		return errors.New("Error on Lib:Put")
 	}
 	return nil
 }
@@ -281,12 +281,12 @@ func (ls *libstore) Put(key, value string) error {
 func (ls *libstore) Delete(key string) error {
 	// fmt.Println("Lib: Delete")
 	// defer fmt.Println("Lib: Delete Done")
-	lib := ls.FindRPC(key)
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.DeleteArgs{Key: key}
 	var reply storagerpc.DeleteReply
-	_ = lib.Call("StorageServer.Delete", args, &reply)
+	_ = ssRPC.Call("StorageServer.Delete", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:Delete")
+		return errors.New("Error on Lib:Delete")
 	}
 	return nil
 }
@@ -303,12 +303,12 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	case WantLease:
 		wantlease = true
 	}
-	lib := ls.FindRPC(key)
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantlease, HostPort: ls.MyHostPort}
 	var reply storagerpc.GetListReply
-	_ = lib.Call("StorageServer.GetList", args, &reply)
+	_ = ssRPC.Call("StorageServer.GetList", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return nil, errors.New("Error on lib:GetList")
+		return nil, errors.New("Error on Lib:GetList")
 	}
 	if reply.Lease.Granted {
 		item := &cacheitem{Status: Found, Item: reply.Value}
@@ -323,12 +323,12 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
 	// fmt.Println("Lib: RemoveFromList")
 	// defer fmt.Println("Lib: RemoveFromList Done")
-	lib := ls.FindRPC(key)
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.PutArgs{Key: key, Value: removeItem}
 	var reply storagerpc.PutReply
-	_ = lib.Call("StorageServer.RemoveFromList", args, &reply)
+	_ = ssRPC.Call("StorageServer.RemoveFromList", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:RemoveFromList")
+		return errors.New("Error on Lib:RemoveFromList")
 	}
 	return nil
 }
@@ -336,12 +336,12 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 func (ls *libstore) AppendToList(key, newItem string) error {
 	// fmt.Println("Lib: AppendToList")
 	// defer fmt.Println("Lib: AppendToList Done")
-	lib := ls.FindRPC(key)
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.PutArgs{Key: key, Value: newItem}
 	var reply storagerpc.PutReply
-	_ = lib.Call("StorageServer.AppendToList", args, &reply)
+	_ = ssRPC.Call("StorageServer.AppendToList", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:AppendToList")
+		return errors.New("Error on Lib:AppendToList")
 	}
 	return nil
 }
@@ -349,6 +349,7 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
 	ls.revokeCache <- args.Key
 	<-ls.CacheReply
+	// key not found ?
 	reply.Status = storagerpc.OK
 	return nil
 }
