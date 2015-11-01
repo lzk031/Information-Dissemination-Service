@@ -12,6 +12,13 @@ import (
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
+const (
+	Delete = iota + 1
+	Put
+	AppendToList
+	RemoveFromList
+)
+
 type storageServer struct {
 	lsRPC          map[string]*rpc.Client // libstore hostport to rpc client
 	ItemMap        map[string]string      // PostKey to value
@@ -22,10 +29,11 @@ type storageServer struct {
 	// critical section
 	CacheRecord map[string][]LeaseRecord // key to libstore server hostport
 
-	Ready        chan bool    // only for slave servers
-	addRecord    chan AddPack // key and item
-	delRecord    chan string  // key
-	CallBack     chan string  // key
+	Ready        chan bool       // only for slave servers
+	addRecord    chan AddPack    // key and item
+	delRecord    chan string     // key
+	ModifyCS     chan ModifyPack // key
+	ModifyReply  chan storagerpc.Status
 	successReply chan bool
 	addRPC       chan string // HostPort
 }
@@ -38,6 +46,12 @@ type LeaseRecord struct {
 type AddPack struct {
 	Key         string
 	LeaseRecord LeaseRecord
+}
+
+type ModifyPack struct {
+	Operation int
+	Key       string
+	Value     string
 }
 
 type NodeSlice []storagerpc.Node
@@ -74,9 +88,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 
 	storageServer.addRecord = make(chan AddPack) // key and item
 	storageServer.delRecord = make(chan string)  // key
-	storageServer.CallBack = make(chan string)   // key
 	storageServer.successReply = make(chan bool)
 	storageServer.addRPC = make(chan string)
+	storageServer.ModifyReply = make(chan storagerpc.Status)
 
 	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
 	listener, err := net.Listen("tcp", hostPort)
@@ -149,9 +163,9 @@ func (ss *storageServer) LeaseHandler() {
 				return
 			}
 			ss.successReply <- Sussess
-		case key := <-ss.CallBack:
-			status := ss.LeaseCallBack(key)
-			ss.successReply <- status
+		case pack := <-ss.ModifyCS:
+			status := ss.Modify(pack)
+			ss.ModifyReply <- status
 			// case key := <-ss.delRecord:
 			// 	delete(ss.CacheRecord, key)
 			// 	ss.successReply <- true
@@ -278,58 +292,100 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
-	// assume item in ItemMap
-	if _, found := ss.ItemMap[args.Key]; found {
-		delete(ss.ItemMap, args.Key)
-		reply.Status = storagerpc.OK
-		return nil
-	}
-	// not found
-	reply.Status = storagerpc.ItemNotFound
+	// assume key in ItemMap
+	pack := &ModifyPack{Operation: Delete, Key: args.Key, Value: ""}
+	ss.ModifyCS <- *pack
+	status := <-ss.ModifyReply
+	reply.Status = status
 	return nil
 }
 
+func (ss *storageServer) Modify(pack ModifyPack) storagerpc.Status {
+	switch pack.Operation {
+	case Delete:
+		_ = ss.CheckCallBack(pack.Key)
+		if _, found := ss.ItemMap[pack.Key]; found {
+			delete(ss.ItemMap, pack.Key)
+			return storagerpc.OK
+		}
+		// not found
+		return storagerpc.ItemNotFound
+	case Put:
+		_ = ss.CheckCallBack(pack.Key)
+		ss.ItemMap[pack.Key] = pack.Value
+		return storagerpc.OK
+	case AppendToList:
+		_ = ss.CheckCallBack(pack.Key)
+		list := ss.ListMap[pack.Key]
+		i := FindPos(list, pack.Value)
+		if i != -1 { // already exists
+			return storagerpc.ItemExists
+		}
+		list = append(list, pack.Value)
+		ss.ListMap[pack.Key] = list
+		return storagerpc.OK
+	case RemoveFromList:
+		_ = ss.CheckCallBack(pack.Key)
+		list := ss.ListMap[pack.Key]
+		i := FindPos(list, pack.Value)
+		if i == -1 { // not found in slice
+			return storagerpc.ItemNotFound
+		}
+		list = append(list[:i], list[i+1:]...)
+		ss.ListMap[pack.Key] = list
+		return storagerpc.OK
+	}
+	return storagerpc.OK
+}
+
+func (ss *storageServer) CheckCallBack(key string) bool {
+	LeaseRecordSlice := ss.CacheRecord[key]
+	for _, LeaseRecord := range LeaseRecordSlice {
+		duration := time.Since(LeaseRecord.timestamp).Seconds()
+		if duration < storagerpc.LeaseSeconds+storagerpc.LeaseGuardSeconds {
+			_ = ss.LeaseCallBack(key, LeaseRecord.HostPort)
+			// if Status == storagerpc.OK {
+			// 	fmt.Println("revoke lease status OK")
+			// }
+		}
+	}
+	return true
+}
+
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	defer fmt.Println("Put")
-	ss.ItemMap[args.Key] = args.Value
-	reply.Status = storagerpc.OK
+	// defer fmt.Println("Put")
+	// check key lease
+	pack := &ModifyPack{Operation: Put, Key: args.Key, Value: args.Value}
+	ss.ModifyCS <- *pack
+	status := <-ss.ModifyReply
+	reply.Status = status
 	return nil
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	// assume userID exists
-	list := ss.ListMap[args.Key]
-	i := FindPos(list, args.Value)
-	if i != -1 { // already exists
-		reply.Status = storagerpc.ItemExists
-		return nil
-	}
-	list = append(list, args.Value)
-	ss.ListMap[args.Key] = list
-	reply.Status = storagerpc.OK
+	pack := &ModifyPack{Operation: AppendToList, Key: args.Key, Value: args.Value}
+	ss.ModifyCS <- *pack
+	status := <-ss.ModifyReply
+	reply.Status = status
 	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	// assume userID exists
-	list := ss.ListMap[args.Key]
-	i := FindPos(list, args.Value)
-	if i == -1 { // not found in slice
-		reply.Status = storagerpc.ItemNotFound
-		return nil
-	}
-	list = append(list[:i], list[i+1:]...)
-	ss.ListMap[args.Key] = list
-	reply.Status = storagerpc.OK
+	pack := &ModifyPack{Operation: RemoveFromList, Key: args.Key, Value: args.Value}
+	ss.ModifyCS <- *pack
+	status := <-ss.ModifyReply
+	reply.Status = status
 	return nil
 }
 
-func (ss *storageServer) LeaseCallBack(key string) bool {
-	// lsRPC := ss.lsRPC[key]
-
-	// args := &{storagerpc.RevokeLeaseArgs: key}
-	// var reply storagerpc.RevokeLeaseReply
-
+func (ss *storageServer) LeaseCallBack(key string, HostPort string) storagerpc.Status {
+	lsRPC := ss.lsRPC[HostPort]
+	args := &storagerpc.RevokeLeaseArgs{Key: key}
+	var reply storagerpc.RevokeLeaseReply
+	lsRPC.Call("LeaseCallbacks.RevokeLease", args, &reply)
+	return reply.Status
 }
 
 func FindPos(s []string, value string) int {
