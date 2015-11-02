@@ -872,14 +872,11 @@ func testDelayedRevokeWithUpdate2() {
 	f := func() bool {
 		ts := time.Now()
 		// put key1, this should block
-		fmt.Println("before put")
 		replyP, err := st.Put(key1, "newnew-value")
-		fmt.Println("after put")
 		if checkErrorStatus(err, replyP.Status, storagerpc.OK) {
 			return true
 		}
 		d := time.Since(ts)
-		fmt.Println(d)
 		if d < (storagerpc.LeaseSeconds+storagerpc.LeaseGuardSeconds-1)*time.Second {
 			LOGE.Println("FAIL: storage server should hold this Put until leases expires key1")
 			failCount++
