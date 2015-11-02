@@ -7,6 +7,7 @@ import (
 	"net/rpc"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
@@ -26,6 +27,7 @@ type storageServer struct {
 	numNodes       int                    // number of storage servers expected
 	ServerNodes    []storagerpc.Node      // only for master server
 	AllServerReady bool                   // only for master server
+	Mutex          map[string]sync.Mutex
 	// critical section
 	CacheRecord map[string][]LeaseRecord // key to libstore server hostport
 
@@ -85,12 +87,14 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	storageServer.ListMap = make(map[string][]string)
 	storageServer.lsRPC = make(map[string]*rpc.Client)
 	storageServer.CacheRecord = make(map[string][]LeaseRecord)
+	storageServer.Mutex = make(map[string]sync.Mutex)
 
 	storageServer.addRecord = make(chan AddPack) // key and item
 	storageServer.delRecord = make(chan string)  // key
 	storageServer.successReply = make(chan bool)
 	storageServer.addRPC = make(chan string)
 	storageServer.ModifyReply = make(chan storagerpc.Status)
+	storageServer.ModifyCS = make(chan ModifyPack)
 
 	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
 	listener, err := net.Listen("tcp", hostPort)
@@ -111,6 +115,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		}
 		rpc.HandleHTTP()
 		go http.Serve(listener, nil)
+		go storageServer.LeaseHandler()
 		return storageServer, nil
 	}
 
@@ -166,9 +171,6 @@ func (ss *storageServer) LeaseHandler() {
 		case pack := <-ss.ModifyCS:
 			status := ss.Modify(pack)
 			ss.ModifyReply <- status
-			// case key := <-ss.delRecord:
-			// 	delete(ss.CacheRecord, key)
-			// 	ss.successReply <- true
 		}
 	}
 }
