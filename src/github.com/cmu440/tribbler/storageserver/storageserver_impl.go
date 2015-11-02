@@ -22,24 +22,18 @@ const (
 )
 
 type storageServer struct {
-	lsRPC          map[string]*rpc.Client // libstore hostport to rpc client
-	ItemMap        map[string]string      // PostKey to value
-	ListMap        map[string][]string    // key defined in util
-	numNodes       int                    // number of storage servers expected
-	ServerNodes    []storagerpc.Node      // only for master server
-	AllServerReady bool                   // only for master server
-	Mutex          map[string]*sync.Mutex // mutex for each key
+	lsRPC          map[string]*rpc.Client   // libstore hostport to rpc client
+	ItemMap        map[string]string        // PostKey to value
+	ListMap        map[string][]string      // key defined in util
+	CacheRecord    map[string][]LeaseRecord // key to libstore server hostport
+	Mutex          map[string]*sync.Mutex   // mutex for each key
 	ServerMutex    *sync.Mutex
+	ServerNodes    []storagerpc.Node // only for master server
+	numNodes       int               // number of storage servers expected
+	AllServerReady bool              // only for master server
 	nodeID         uint32
-	// critical section
-	CacheRecord map[string][]LeaseRecord // key to libstore server hostport
 
 	Ready chan bool // only for slave servers
-	// addRecord    chan AddPack    // key and item
-	// ModifyCS     chan ModifyPack // key
-	// ModifyReply  chan storagerpc.Status
-	// successReply chan bool
-	// addRPC       chan string // HostPort
 }
 
 type LeaseRecord struct {
@@ -92,12 +86,6 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	storageServer.Mutex = make(map[string]*sync.Mutex)
 	storageServer.ServerMutex = &sync.Mutex{}
 	storageServer.nodeID = nodeID
-
-	// storageServer.addRecord = make(chan AddPack) // key and item
-	// storageServer.successReply = make(chan bool)
-	// storageServer.addRPC = make(chan string)
-	// storageServer.ModifyReply = make(chan storagerpc.Status)
-	// storageServer.ModifyCS = make(chan ModifyPack)
 
 	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
 	listener, err := net.Listen("tcp", hostPort)
