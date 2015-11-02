@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
@@ -27,17 +28,18 @@ type storageServer struct {
 	numNodes       int                    // number of storage servers expected
 	ServerNodes    []storagerpc.Node      // only for master server
 	AllServerReady bool                   // only for master server
-	Mutex          map[string]sync.Mutex
+	Mutex          map[string]*sync.Mutex // mutex for each key
+	ServerMutex    *sync.Mutex
+	nodeID         uint32
 	// critical section
 	CacheRecord map[string][]LeaseRecord // key to libstore server hostport
 
-	Ready        chan bool       // only for slave servers
-	addRecord    chan AddPack    // key and item
-	delRecord    chan string     // key
-	ModifyCS     chan ModifyPack // key
-	ModifyReply  chan storagerpc.Status
-	successReply chan bool
-	addRPC       chan string // HostPort
+	Ready chan bool // only for slave servers
+	// addRecord    chan AddPack    // key and item
+	// ModifyCS     chan ModifyPack // key
+	// ModifyReply  chan storagerpc.Status
+	// successReply chan bool
+	// addRPC       chan string // HostPort
 }
 
 type LeaseRecord struct {
@@ -87,14 +89,15 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	storageServer.ListMap = make(map[string][]string)
 	storageServer.lsRPC = make(map[string]*rpc.Client)
 	storageServer.CacheRecord = make(map[string][]LeaseRecord)
-	storageServer.Mutex = make(map[string]sync.Mutex)
+	storageServer.Mutex = make(map[string]*sync.Mutex)
+	storageServer.ServerMutex = &sync.Mutex{}
+	storageServer.nodeID = nodeID
 
-	storageServer.addRecord = make(chan AddPack) // key and item
-	storageServer.delRecord = make(chan string)  // key
-	storageServer.successReply = make(chan bool)
-	storageServer.addRPC = make(chan string)
-	storageServer.ModifyReply = make(chan storagerpc.Status)
-	storageServer.ModifyCS = make(chan ModifyPack)
+	// storageServer.addRecord = make(chan AddPack) // key and item
+	// storageServer.successReply = make(chan bool)
+	// storageServer.addRPC = make(chan string)
+	// storageServer.ModifyReply = make(chan storagerpc.Status)
+	// storageServer.ModifyCS = make(chan ModifyPack)
 
 	hostPort := net.JoinHostPort("localhost", strconv.Itoa(port))
 	listener, err := net.Listen("tcp", hostPort)
@@ -115,7 +118,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		}
 		rpc.HandleHTTP()
 		go http.Serve(listener, nil)
-		go storageServer.LeaseHandler()
+		// go storageServer.LeaseHandler()
 		return storageServer, nil
 	}
 
@@ -151,29 +154,29 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	// serve requests in a background goroutine.
 	rpc.HandleHTTP()
 	go http.Serve(listener, nil)
-	go storageServer.LeaseHandler()
+	// go storageServer.LeaseHandler()
 	return storageServer, nil
 }
 
-func (ss *storageServer) LeaseHandler() {
-	for {
-		select {
-		case pack := <-ss.addRecord:
-			status := ss.AddRecord(pack)
-			ss.successReply <- status
-		case HostPort := <-ss.addRPC:
-			Sussess := ss.AddRPC(HostPort)
-			if !Sussess {
-				fmt.Println("Error on AddRPC")
-				return
-			}
-			ss.successReply <- Sussess
-		case pack := <-ss.ModifyCS:
-			status := ss.Modify(pack)
-			ss.ModifyReply <- status
-		}
-	}
-}
+// func (ss *storageServer) LeaseHandler() {
+// 	for {
+// 		select {
+// 		case pack := <-ss.addRecord: // Get, GetList
+// 			status := ss.AddRecord(pack)
+// 			ss.successReply <- status
+// 		case HostPort := <-ss.addRPC: // Get, GetList
+// 			Sussess := ss.AddRPC(HostPort)
+// 			// if !Sussess {
+// 			// 	fmt.Println("Error on AddRPC")
+// 			// 	return
+// 			// }
+// 			ss.successReply <- Sussess
+// 		case pack := <-ss.ModifyCS: // Delete, Put, AppendToList, RemoveFromList
+// 			status := ss.Modify(pack)
+// 			ss.ModifyReply <- status
+// 		}
+// 	}
+// }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
 	if ss.AllServerReady {
@@ -220,11 +223,15 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 }
 
 func (ss *storageServer) AddRecord(pack AddPack) bool {
+	ss.Lock(pack.Key)
+	defer ss.Unlock(pack.Key)
 	RecordPackSlice, found := ss.CacheRecord[pack.Key]
 	if !found {
 		var leaseRecord []LeaseRecord
 		leaseRecord = append(leaseRecord, pack.LeaseRecord)
+		ss.ServerMutex.Lock()
 		ss.CacheRecord[pack.Key] = leaseRecord
+		ss.ServerMutex.Unlock()
 		return true
 	}
 	// if already in record, update timestamp
@@ -238,7 +245,9 @@ func (ss *storageServer) AddRecord(pack AddPack) bool {
 	}
 	// exists some libserver that has leases but this libserver does not
 	RecordPackSlice = append(RecordPackSlice, pack.LeaseRecord)
+	ss.ServerMutex.Lock()
 	ss.CacheRecord[pack.Key] = RecordPackSlice
+	ss.ServerMutex.Unlock()
 	return true
 }
 
@@ -248,7 +257,9 @@ func (ss *storageServer) AddRPC(HostPort string) bool {
 		if derr != nil {
 			return false
 		}
+		ss.ServerMutex.Lock()
 		ss.lsRPC[HostPort] = lsRPC // add rpc client
+		ss.ServerMutex.Unlock()
 	}
 	return true
 }
@@ -260,23 +271,33 @@ func (ss *storageServer) LeaseMaker(args *storagerpc.GetArgs) storagerpc.Lease {
 	}
 	// WantLease
 	// update hostport
-	ss.addRPC <- args.HostPort // wait for adding RPC
-	<-ss.successReply
+	// ss.addRPC <- args.HostPort // wait for adding RPC
+	_ = ss.AddRPC(args.HostPort)
+	// <-ss.successReply
 	// renew timestamp
 	leaserecord := &LeaseRecord{timestamp: time.Now(), HostPort: args.HostPort}
 	addPack := &AddPack{Key: args.Key, LeaseRecord: *leaserecord}
-	ss.addRecord <- *addPack // wait for adding lease record
-	<-ss.successReply
+	// ss.addRecord <- *addPack // wait for adding lease record
+	_ = ss.AddRecord(*addPack)
+	// <-ss.successReply
 
 	Lease := &storagerpc.Lease{Granted: true, ValidSeconds: storagerpc.LeaseSeconds}
 	return *Lease
 }
 
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
-	if Value, found := ss.ItemMap[args.Key]; found {
-		reply.Status = storagerpc.OK
-		reply.Value = Value
+	// fmt.Println("Get")
+	// defer fmt.Println("Get return")
+	if right := ss.DoubleCheckKey(args.Key); !right {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	if _, found := ss.ItemMap[args.Key]; found {
 		lease := ss.LeaseMaker(args)
+		reply.Status = storagerpc.OK
+		// key := ss.ParseKey(args.Key)
+		reply.Value = ss.ItemMap[args.Key]
 		reply.Lease = lease
 		return nil
 	}
@@ -286,19 +307,16 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
 	// assuem userID exists
-	reply.Status = storagerpc.OK
-	reply.Value = ss.ListMap[args.Key]
-	lease := ss.LeaseMaker(args)
-	reply.Lease = lease
-	return nil
-}
+	if right := ss.DoubleCheckKey(args.Key); !right {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
 
-func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
-	// assume key in ItemMap
-	pack := &ModifyPack{Operation: Delete, Key: args.Key, Value: ""}
-	ss.ModifyCS <- *pack
-	status := <-ss.ModifyReply
-	reply.Status = status
+	lease := ss.LeaseMaker(args)
+	reply.Status = storagerpc.OK
+	// key := ss.ParseKey(args.Key)
+	reply.Value = ss.ListMap[args.Key]
+	reply.Lease = lease
 	return nil
 }
 
@@ -307,14 +325,18 @@ func (ss *storageServer) Modify(pack ModifyPack) storagerpc.Status {
 	case Delete:
 		_ = ss.CheckCallBack(pack.Key)
 		if _, found := ss.ItemMap[pack.Key]; found {
+			ss.ServerMutex.Lock()
 			delete(ss.ItemMap, pack.Key)
+			ss.ServerMutex.Unlock()
 			return storagerpc.OK
 		}
 		// not found
 		return storagerpc.ItemNotFound
 	case Put:
 		_ = ss.CheckCallBack(pack.Key)
+		ss.ServerMutex.Lock()
 		ss.ItemMap[pack.Key] = pack.Value
+		ss.ServerMutex.Unlock()
 		return storagerpc.OK
 	case AppendToList:
 		_ = ss.CheckCallBack(pack.Key)
@@ -324,7 +346,9 @@ func (ss *storageServer) Modify(pack ModifyPack) storagerpc.Status {
 			return storagerpc.ItemExists
 		}
 		list = append(list, pack.Value)
+		ss.ServerMutex.Lock()
 		ss.ListMap[pack.Key] = list
+		ss.ServerMutex.Unlock()
 		return storagerpc.OK
 	case RemoveFromList:
 		_ = ss.CheckCallBack(pack.Key)
@@ -334,60 +358,181 @@ func (ss *storageServer) Modify(pack ModifyPack) storagerpc.Status {
 			return storagerpc.ItemNotFound
 		}
 		list = append(list[:i], list[i+1:]...)
+		ss.ServerMutex.Lock()
 		ss.ListMap[pack.Key] = list
+		ss.ServerMutex.Unlock()
 		return storagerpc.OK
 	}
 	return storagerpc.OK
 }
 
 func (ss *storageServer) CheckCallBack(key string) bool {
-	LeaseRecordSlice := ss.CacheRecord[key]
-	for _, LeaseRecord := range LeaseRecordSlice {
-		duration := time.Since(LeaseRecord.timestamp).Seconds()
-		if duration < storagerpc.LeaseSeconds+storagerpc.LeaseGuardSeconds {
-			_ = ss.LeaseCallBack(key, LeaseRecord.HostPort)
-			// if Status == storagerpc.OK {
-			// 	fmt.Println("revoke lease status OK")
-			// }
+	LeaseRecordSlice, found := ss.CacheRecord[key]
+	// fmt.Println(ss.CacheRecord)
+	// fmt.Println(found)
+	if found {
+		Return := make(chan bool)
+		GoRoutine := 0
+		ReturnRoutine := 0
+		for _, LeaseRecord := range LeaseRecordSlice {
+			GoRoutine++
+			go ss.CallBackOneLease(LeaseRecord, key, Return)
+		}
+		for {
+			// fmt.Println("CheckCallBack3")
+			select {
+			case <-Return:
+				ReturnRoutine++
+				// fmt.Println("CheckCallBack4")
+				if ReturnRoutine == GoRoutine {
+					ss.ServerMutex.Lock()
+					// fmt.Println(ss.CacheRecord)
+					delete(ss.CacheRecord, key)
+					// fmt.Println(ss.CacheRecord)
+					ss.ServerMutex.Unlock()
+					return true
+				}
+			}
 		}
 	}
 	return true
 }
 
+func (ss *storageServer) CallBackOneLease(LeaseRecord LeaseRecord, key string, Return chan bool) {
+	duration := time.Since(LeaseRecord.timestamp).Seconds()
+	if expire := storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds - duration; expire > 0 {
+		CallBackFinish := make(chan bool)
+		go ss.LeaseCallBack(key, LeaseRecord.HostPort, CallBackFinish)
+		// fmt.Println("CallBackOneLease1")
+		select {
+		case <-CallBackFinish:
+			// fmt.Println("callback finish")
+		case <-time.After(time.Duration(storagerpc.LeaseSeconds+storagerpc.LeaseGuardSeconds) * time.Second):
+			close(CallBackFinish)
+			// fmt.Println("timeout")
+		}
+	}
+	Return <- true
+	return
+}
+
+func (ss *storageServer) LeaseCallBack(key string, HostPort string, Finish chan bool) storagerpc.Status {
+	lsRPC := ss.lsRPC[HostPort]
+	args := &storagerpc.RevokeLeaseArgs{Key: key}
+	var reply storagerpc.RevokeLeaseReply
+	// fmt.Println("before rpc")
+	lsRPC.Call("LeaseCallbacks.RevokeLease", args, &reply)
+	// fmt.Println("before finish")
+	Finish <- true
+	// fmt.Println("after finish")
+	return reply.Status
+}
+
+func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
+	ss.Lock(args.Key)
+	defer ss.Unlock(args.Key)
+	if right := ss.DoubleCheckKey(args.Key); !right {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	// assume key in ItemMap
+	// key := ss.ParseKey(args.Key)
+	pack := &ModifyPack{Operation: Delete, Key: args.Key, Value: ""}
+	status := ss.Modify(*pack)
+	// ss.ModifyCS <- *pack
+	// status := <-ss.ModifyReply
+	reply.Status = status
+	return nil
+}
+
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	// defer fmt.Println("Put")
+	ss.Lock(args.Key)
+	defer ss.Unlock(args.Key)
+	if right := ss.DoubleCheckKey(args.Key); !right {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	// fmt.Println("Put")
+	// defer fmt.Println("Put return")
 	// check key lease
+	// key := ss.ParseKey(args.Key)
 	pack := &ModifyPack{Operation: Put, Key: args.Key, Value: args.Value}
-	ss.ModifyCS <- *pack
-	status := <-ss.ModifyReply
+	status := ss.Modify(*pack)
+	// ss.ModifyCS <- *pack
+	// status := <-ss.ModifyReply
 	reply.Status = status
 	return nil
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
+	ss.Lock(args.Key)
+	defer ss.Unlock(args.Key)
+	if right := ss.DoubleCheckKey(args.Key); !right {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
 	// assume userID exists
+	// key := ss.ParseKey(args.Key)
 	pack := &ModifyPack{Operation: AppendToList, Key: args.Key, Value: args.Value}
-	ss.ModifyCS <- *pack
-	status := <-ss.ModifyReply
+	status := ss.Modify(*pack)
+	// ss.ModifyCS <- *pack
+	// status := <-ss.ModifyReply
 	reply.Status = status
 	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
+	ss.Lock(args.Key)
+	defer ss.Unlock(args.Key)
+	if right := ss.DoubleCheckKey(args.Key); !right {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
 	// assume userID exists
+	// key := ss.ParseKey(args.Key)
 	pack := &ModifyPack{Operation: RemoveFromList, Key: args.Key, Value: args.Value}
-	ss.ModifyCS <- *pack
-	status := <-ss.ModifyReply
+	status := ss.Modify(*pack)
+	// ss.ModifyCS <- *pack
+	// status := <-ss.ModifyReply
 	reply.Status = status
 	return nil
 }
 
-func (ss *storageServer) LeaseCallBack(key string, HostPort string) storagerpc.Status {
-	lsRPC := ss.lsRPC[HostPort]
-	args := &storagerpc.RevokeLeaseArgs{Key: key}
-	var reply storagerpc.RevokeLeaseReply
-	lsRPC.Call("LeaseCallbacks.RevokeLease", args, &reply)
-	return reply.Status
+// func (ss *storageServer) ParseKey(key string) string {
+// 	return strings.Split(key, ":")[0]
+// }
+func (ss *storageServer) DoubleCheckKey(key string) bool {
+	NodeNum := libstore.StoreHash(key)
+	for _, ServerNode := range ss.ServerNodes {
+		if ServerNode.NodeID >= NodeNum {
+			return ServerNode.NodeID == ss.nodeID
+		}
+	}
+	FirstNode := ss.ServerNodes[0]
+	// if cannot find, choose the first node
+	return FirstNode.NodeID == ss.nodeID
+}
+
+func (ss *storageServer) Lock(key string) {
+	Mutex, found := ss.Mutex[key]
+	if !found {
+		mutex := &sync.Mutex{}
+		ss.Mutex[key] = mutex
+		mutex.Lock()
+		return
+	}
+	Mutex.Lock()
+	return
+}
+
+func (ss *storageServer) Unlock(key string) {
+	mutex := ss.Mutex[key]
+	mutex.Unlock()
+	return
 }
 
 func FindPos(s []string, value string) int {
