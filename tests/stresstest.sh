@@ -96,7 +96,7 @@ function testStress {
     do
         for CLIENT in `seq 0 $((CLIENT_COUNT[$USER] - 1))`
         do
-            ${STRESS_CLIENT} -port=${TRIB_PORT[$((C % M))]} -clientId=${CLIENT} ${USER} ${K} & 
+            go run -race $GOPATH/src/github.com/cmu440/tribbler/tests/stresstest/stresstest.go -port=${TRIB_PORT[$((C % M))]} -clientId=${CLIENT} ${USER} ${K} & 
             STRESS_CLIENT_PID[$C]=$!
             # Setup background thread to kill client upon timeout.
             sleep ${TIMEOUT} && kill -9 ${STRESS_CLIENT_PID[$C]} &> /dev/null &
