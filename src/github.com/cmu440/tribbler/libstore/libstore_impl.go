@@ -2,16 +2,57 @@ package libstore
 
 import (
 	"errors"
+	"fmt"
 	"net/rpc"
+	"sort"
+	"time"
 
+	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	// "github.com/cmu440/tribbler/util"
 )
 
-type libstore struct {
-	lib      *rpc.Client
-	HostPort string
+type CacheStatus int
+
+// cache constants
+const (
+	Found     = iota + 1 // item found in cache
+	WantLease            // item not in cache and want lease
+	SendQuery            // item not in cache but does not want lease
+)
+
+type libstoreServer struct {
+	ssRPC       map[string]*rpc.Client // rpc client to storage server
+	ServerNodes []storagerpc.Node
+	MyHostPort  string
+	LeaseMode   LeaseMode
+
+	// critical section
+	Cache     map[string]cacheitem
+	KeyRecord map[string][]time.Time
+
+	Ready           chan storagerpc.GetServersReply
+	checkCache      chan string
+	checkCacheReply chan cacheitem
+	revokeCache     chan string
+	// revokeCacheReply chan bool
+	// expireCache      chan string
+	addCache chan addcachePack
+	// addCacheReply chan bool
+	CacheReply chan bool
 }
+
+type addcachePack struct {
+	Key  string
+	Item cacheitem
+}
+
+type cacheitem struct {
+	Status CacheStatus
+	Item   interface{}
+}
+
+type NodeSlice []storagerpc.Node
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
 // is the master storage server's host:port. myHostPort is this Libstore's host:port
@@ -38,88 +79,331 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	// this is similar to client
-	lib, err := rpc.DialHTTP("tcp", masterServerHostPort)
+	ls := new(libstoreServer)
+	ls.MyHostPort = myHostPort
+	ls.ssRPC = make(map[string]*rpc.Client)
+	ls.Cache = make(map[string]cacheitem)
+	ls.KeyRecord = make(map[string][]time.Time)
+	ls.LeaseMode = mode
+
+	ls.Ready = make(chan storagerpc.GetServersReply)
+	ls.checkCache = make(chan string)
+	ls.checkCacheReply = make(chan cacheitem)
+	ls.revokeCache = make(chan string)
+	// ls.revokeCacheReply = make(chan bool)
+	ls.addCache = make(chan addcachePack)
+	ls.CacheReply = make(chan bool)
+
+	// listen to master server
+	ssRPC, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
 		// fmt.Println("Error: NewLibstore DialHTTP:", err)
 		return nil, err
 	}
-	// rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
-	return &libstore{lib: lib, HostPort: myHostPort}, nil
+	ls.ssRPC[masterServerHostPort] = ssRPC
+	go ls.ContactMasterServer(masterServerHostPort)
+
+	// block slave servers
+	reply := <-ls.Ready
+	if reply.Status != storagerpc.OK { // fail retry upto 5 times
+		return nil, errors.New("Error: Master Storage Server is not ready")
+	}
+	// sort reply by NodeID
+	Servers := NodeSlice(reply.Servers)
+	sort.Sort(Servers)
+	ls.ServerNodes = []storagerpc.Node(Servers)
+	// create rpc to all storage servers
+	if aerr := ls.RegisterStorageRPC(); aerr != nil {
+		return nil, aerr
+	}
+	go ls.CacheHandler()
+
+	// register rpc to receive call backs from storage servers
+	// listener, err := net.Listen("tcp", myHostPort)
+	// if err != nil {
+	// 	fmt.Println("Error on LibServer Listen", err)
+	// 	return nil, err
+	// }
+	if rerr := rpc.RegisterName("LeaseCallbacks", librpc.Wrap(ls)); rerr != nil {
+		fmt.Println("Error on LibServer RegisterName", err)
+		return nil, err
+	}
+	// rpc.HandleHTTP()
+	// go http.Serve(listener, nil)
+
+	return ls, nil
 }
 
-func (ls *libstore) Get(key string) (string, error) {
+func (ls *libstoreServer) ContactMasterServer(masterServerHostPort string) {
+	ssRPC := ls.ssRPC[masterServerHostPort]
+	args := &storagerpc.GetServersArgs{}
+	var reply storagerpc.GetServersReply
+	for i := 0; i < 6; i++ { // retry upto 5 times
+		_ = ssRPC.Call("StorageServer.GetServers", args, &reply)
+		if reply.Status != storagerpc.OK {
+			time.Sleep(1 * time.Second)
+		} else { // Status = OK
+			ls.Ready <- reply
+			return
+		}
+	}
+	ls.Ready <- reply
+	return
+}
+
+/*
+ *	CacheHandler
+ *
+ * 	Handle all cache-involved operations
+ */
+func (ls *libstoreServer) CacheHandler() {
+	for {
+		select {
+		case key := <-ls.checkCache:
+			CacheItem := ls.CheckCache(key)
+			ls.checkCacheReply <- CacheItem
+		case key := <-ls.revokeCache:
+			delete(ls.Cache, key)
+			ls.CacheReply <- true
+		case pack := <-ls.addCache:
+			ls.Cache[pack.Key] = pack.Item
+			ls.CacheReply <- true
+		}
+	}
+}
+
+/*
+ *	CheckCache
+ *
+ * 	check if the item is already in the cache
+ */
+func (ls *libstoreServer) CheckCache(key string) cacheitem {
+	item, found := ls.Cache[key]
+	if found { // item already in cache
+		return item
+	}
+	status := ls.CheckRecord(key)
+	ItemReturn := &cacheitem{Status: status}
+	// ItemReturn = &cacheitem{Status: status, Item: item}
+	return *ItemReturn
+}
+
+/*
+ *	CheckRecord
+ *
+ * 	Check the recent queries libstore server has sent
+ */
+func (ls *libstoreServer) CheckRecord(key string) CacheStatus {
+	record, found := ls.KeyRecord[key]
+	if !found {
+		record = make([]time.Time, 0)
+	}
+	if len(record) < storagerpc.QueryCacheThresh {
+		record = append(record, time.Now())
+		ls.KeyRecord[key] = record // update record
+		return SendQuery
+	}
+	// check timestamp
+	timestamp := record[len(record)-storagerpc.QueryCacheThresh]
+	record = append(record, time.Now())
+	ls.KeyRecord[key] = record[(len(record) - storagerpc.QueryCacheThresh):] // update record
+	// duration := -timestamp.Sub(time.Now())
+	duration := time.Since(timestamp).Seconds()
+	if duration < storagerpc.QueryCacheSeconds { // want lease
+		return WantLease
+	}
+	return SendQuery
+}
+
+/*
+ *	RegisterStorageRPC
+ *
+ * 	register rpc to all storage servers
+ */
+func (ls *libstoreServer) RegisterStorageRPC() error {
+	for _, node := range ls.ServerNodes {
+		if _, found := ls.ssRPC[node.HostPort]; !found {
+			ssRPC, err := rpc.DialHTTP("tcp", node.HostPort)
+			if err != nil {
+				return err
+			}
+			ls.ssRPC[node.HostPort] = ssRPC // add rpc client
+		}
+	}
+	return nil
+}
+
+/*
+ *	FindRPC
+ *
+ * 	perform consistent hashing on different key values and
+ *  find right storage server
+ */
+func (ls *libstoreServer) FindRPC(key string) *rpc.Client {
+	NodeNum := StoreHash(key)
+	for _, ServerNode := range ls.ServerNodes {
+		if ServerNode.NodeID >= NodeNum {
+			return ls.ssRPC[ServerNode.HostPort]
+		}
+	}
+	// if cannot find, choose the first node
+	return ls.ssRPC[ls.ServerNodes[0].HostPort]
+}
+
+/*
+ *	leaseMode
+ *
+ * 	Force wantlease to be determined by leaseMode
+ */
+func (ls *libstoreServer) leaseMode(wantlease bool) bool {
+	switch ls.LeaseMode {
+	case Never:
+		return false
+	case Always:
+		return true
+	case Normal:
+		return wantlease
+	}
+	return wantlease
+}
+
+func (ls *libstoreServer) Get(key string) (string, error) {
 	// fmt.Println("Lib: Get")
 	// defer fmt.Println("Lib: Get Done")
-	args := &storagerpc.GetArgs{Key: key, WantLease: false, HostPort: ls.HostPort}
+	// check lease
+	wantlease := false
+	ls.checkCache <- key
+	item := <-ls.checkCacheReply
+	switch item.Status {
+	case Found:
+		return item.Item.(string), nil
+	case WantLease:
+		wantlease = true
+	}
+	wantlease = ls.leaseMode(wantlease)
+	ssRPC := ls.FindRPC(key)
+	args := &storagerpc.GetArgs{Key: key, WantLease: wantlease, HostPort: ls.MyHostPort}
 	var reply storagerpc.GetReply
-	_ = ls.lib.Call("StorageServer.Get", args, &reply)
+	_ = ssRPC.Call("StorageServer.Get", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return "", errors.New("Error on lib:Get")
+		return "", errors.New("Error on Lib:Get")
+	}
+	if reply.Lease.Granted {
+		item := &cacheitem{Status: Found, Item: reply.Value}
+		pack := &addcachePack{Key: key, Item: *item}
+		ls.addCache <- *pack
+		<-ls.CacheReply
+		go ls.ExpireCache(reply.Lease, key)
 	}
 	return reply.Value, nil
 }
 
-func (ls *libstore) Put(key, value string) error {
+func (ls *libstoreServer) Put(key, value string) error {
 	// fmt.Println("Lib: Put")
 	// defer fmt.Println("Lib: Put Done")
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.PutArgs{Key: key, Value: value}
 	var reply storagerpc.PutReply
-	_ = ls.lib.Call("StorageServer.Put", args, &reply)
+	_ = ssRPC.Call("StorageServer.Put", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:Put")
+		return errors.New("Error on Lib:Put")
 	}
 	return nil
 }
 
-func (ls *libstore) Delete(key string) error {
+func (ls *libstoreServer) Delete(key string) error {
 	// fmt.Println("Lib: Delete")
 	// defer fmt.Println("Lib: Delete Done")
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.DeleteArgs{Key: key}
 	var reply storagerpc.DeleteReply
-	_ = ls.lib.Call("StorageServer.Delete", args, &reply)
+	_ = ssRPC.Call("StorageServer.Delete", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:Delete")
+		return errors.New("Error on Lib:Delete")
 	}
 	return nil
 }
 
-func (ls *libstore) GetList(key string) ([]string, error) {
+func (ls *libstoreServer) GetList(key string) ([]string, error) {
 	// fmt.Println("Lib: GetList")
 	// defer fmt.Println("Lib: GetList Done")
-	args := &storagerpc.GetArgs{Key: key, WantLease: false, HostPort: ls.HostPort}
+	wantlease := false
+	ls.checkCache <- key
+	item := <-ls.checkCacheReply
+	switch item.Status {
+	case Found:
+		return item.Item.([]string), nil
+	case WantLease:
+		wantlease = true
+	}
+	wantlease = ls.leaseMode(wantlease)
+	args := &storagerpc.GetArgs{Key: key, WantLease: wantlease, HostPort: ls.MyHostPort}
+
 	var reply storagerpc.GetListReply
-	_ = ls.lib.Call("StorageServer.GetList", args, &reply)
+	ssRPC := ls.FindRPC(key)
+	_ = ssRPC.Call("StorageServer.GetList", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return nil, errors.New("Error on lib:GetList")
+		return nil, errors.New("Error on Lib:GetList")
+	}
+	if reply.Lease.Granted {
+		item := &cacheitem{Status: Found, Item: reply.Value}
+		pack := &addcachePack{Key: key, Item: *item}
+		ls.addCache <- *pack
+		<-ls.CacheReply
+		go ls.ExpireCache(reply.Lease, key)
 	}
 	return reply.Value, nil
 }
 
-func (ls *libstore) RemoveFromList(key, removeItem string) error {
+func (ls *libstoreServer) RemoveFromList(key, removeItem string) error {
 	// fmt.Println("Lib: RemoveFromList")
 	// defer fmt.Println("Lib: RemoveFromList Done")
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.PutArgs{Key: key, Value: removeItem}
 	var reply storagerpc.PutReply
-	_ = ls.lib.Call("StorageServer.RemoveFromList", args, &reply)
+	_ = ssRPC.Call("StorageServer.RemoveFromList", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:RemoveFromList")
+		return errors.New("Error on Lib:RemoveFromList")
 	}
 	return nil
 }
 
-func (ls *libstore) AppendToList(key, newItem string) error {
+func (ls *libstoreServer) AppendToList(key, newItem string) error {
 	// fmt.Println("Lib: AppendToList")
 	// defer fmt.Println("Lib: AppendToList Done")
+	ssRPC := ls.FindRPC(key)
 	args := &storagerpc.PutArgs{Key: key, Value: newItem}
 	var reply storagerpc.PutReply
-	_ = ls.lib.Call("StorageServer.AppendToList", args, &reply)
+	_ = ssRPC.Call("StorageServer.AppendToList", args, &reply)
 	if reply.Status != storagerpc.OK {
-		return errors.New("Error on lib:AppendToList")
+		return errors.New("Error on Lib:AppendToList")
 	}
 	return nil
 }
 
-func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	return errors.New("not implemented")
+func (ls *libstoreServer) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
+	ls.revokeCache <- args.Key
+	<-ls.CacheReply
+	// key not found ?
+	reply.Status = storagerpc.OK
+	return nil
+}
+
+func (ls *libstoreServer) ExpireCache(lease storagerpc.Lease, key string) {
+	<-time.After(time.Duration(lease.ValidSeconds) * time.Second)
+	ls.revokeCache <- key
+	<-ls.CacheReply
+}
+
+func (key NodeSlice) Len() int {
+	return len(key)
+}
+
+func (key NodeSlice) Swap(i, j int) {
+	key[i], key[j] = key[j], key[i]
+	return
+}
+
+func (key NodeSlice) Less(i, j int) bool {
+	return key[i].NodeID < key[j].NodeID // in asc order
 }

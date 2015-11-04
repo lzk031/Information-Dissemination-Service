@@ -2,6 +2,7 @@ package tribserver
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -11,9 +12,8 @@ import (
 	"time"
 
 	"github.com/cmu440/tribbler/libstore"
-	"github.com/cmu440/tribbler/util"
-	// "github.com/cmu440/tribbler/rpc/storagerpc"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
+	"github.com/cmu440/tribbler/util"
 )
 
 type tribServer struct {
@@ -57,11 +57,13 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 
 	// Create LibStoreServer
 	// Lease Mode 0 - Never
-	lib, _ := libstore.NewLibstore(masterServerHostPort, myHostPort, 0)
+	lib, lerr := libstore.NewLibstore(masterServerHostPort, myHostPort, 0)
+	if lerr != nil {
+		return nil, errors.New("Error on NewLibStore")
+	}
 	tribServer.lib = lib
 
 	return tribServer, nil
-
 }
 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
